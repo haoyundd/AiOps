@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: aiops-webhook
+  group_by: ["alertname", "service"]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 5m
+
+receivers:
+  - name: aiops-webhook
+    webhook_configs:
+      - url: http://api:9900/api/alerts/webhook
+        send_resolved: true

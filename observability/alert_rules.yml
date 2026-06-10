@@ -1,0 +1,41 @@
+groups:
+  - name: demo-service.rules
+    rules:
+      - alert: HighCPUUsage
+        expr: demo_cpu_load{service="demo-service"} > 0.8
+        for: 15s
+        labels:
+          severity: critical
+          service: demo-service
+          environment: local
+          metric: demo_cpu_load
+          threshold: "0.8"
+        annotations:
+          summary: "demo-service CPU 负载过高"
+          description: "demo-service 的 demo_cpu_load 已超过 0.8，触发自动 AIOps 诊断。"
+
+      - alert: SlowResponse
+        expr: demo_average_latency_seconds{service="demo-service"} > 0.8
+        for: 15s
+        labels:
+          severity: warning
+          service: demo-service
+          environment: local
+          metric: demo_average_latency_seconds
+          threshold: "0.8"
+        annotations:
+          summary: "demo-service 响应变慢"
+          description: "demo-service 平均响应时间超过 0.8 秒，触发自动 AIOps 诊断。"
+
+      - alert: ErrorModeEnabled
+        expr: demo_fault_error_mode{service="demo-service"} == 1
+        for: 15s
+        labels:
+          severity: warning
+          service: demo-service
+          environment: local
+          metric: demo_fault_error_mode
+          threshold: "1"
+        annotations:
+          summary: "demo-service 错误故障注入已开启"
+          description: "demo-service error_mode 开关为 1，触发自动 AIOps 诊断。"
