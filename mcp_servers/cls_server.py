@@ -166,6 +166,60 @@ def find_error_patterns(
     return result
 
 
+def _find_fault_signals_impl(
+    service_name: str = DEFAULT_SERVICE,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """查找故障线索日志，覆盖 warning、CPU、慢响应和注入开关等非 error 证据。"""
+    result = _query_service_logs_impl(
+        service_name=service_name,
+        log_level="cpu|slow|fault|injected|latency|warning|error|exception|timeout|failed",
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+    )
+
+    signal_counts: Dict[str, int] = {}
+    for sample in result.get("samples", []):
+        line = sample.get("line", "").lower()
+        # 按真实故障排查关注点归类，报告层可以直接说明命中了哪些线索。
+        if "cpu" in line:
+            signal_counts["cpu"] = signal_counts.get("cpu", 0) + 1
+        if "slow" in line or "latency" in line:
+            signal_counts["latency"] = signal_counts.get("latency", 0) + 1
+        if "fault" in line or "injected" in line:
+            signal_counts["fault_injection"] = signal_counts.get("fault_injection", 0) + 1
+        if "warning" in line:
+            signal_counts["warning"] = signal_counts.get("warning", 0) + 1
+        if "error" in line or "exception" in line or "failed" in line:
+            signal_counts["error"] = signal_counts.get("error", 0) + 1
+        if "timeout" in line:
+            signal_counts["timeout"] = signal_counts.get("timeout", 0) + 1
+
+    result["evidence_type"] = "fault_signals"
+    result["signal_counts"] = signal_counts
+    result["total_signal_samples"] = len(result.get("samples", []))
+    return result
+
+
+@mcp.tool()
+def find_fault_signals(
+    service_name: str = DEFAULT_SERVICE,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """查找故障线索日志，覆盖 warning、CPU、慢响应和注入开关等非 error 证据。"""
+    return _find_fault_signals_impl(
+        service_name=service_name,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+    )
+
+
 @mcp.tool()
 def search_log(
     service_name: str = DEFAULT_SERVICE,

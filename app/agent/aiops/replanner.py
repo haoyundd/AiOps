@@ -14,6 +14,7 @@ from loguru import logger
 from app.core.llm_factory import llm_factory
 from app.tools import get_current_time, retrieve_knowledge
 from app.agent.mcp_client import get_mcp_client_with_retry
+from .evidence_gate import check_evidence_sufficiency
 from .state import PlanExecuteState
 from .utils import format_tools_description
 
@@ -103,9 +104,12 @@ response_prompt = ChatPromptTemplate.from_messages(
                 响应要求：
                 - 清晰、结构化
                 - 基于实际数据，不要编造
-                - 如果某些步骤失败，要诚实说明
-                - 使用 Markdown 格式
-                - 必须固定包含以下小节：
+                 - 如果某些步骤失败，要诚实说明
+                 - 使用 Markdown 格式
+                 - 所有根因判断必须基于已执行步骤中的证据，不得编造未查询到的数据
+                 - 必须区分“已证实”“未发现”“不能排除”
+                 - “未发现错误日志”只能说明没有 error/exception/timeout/failed 证据，不能写成“排除应用层问题”
+                 - 必须固定包含以下小节：
                   1. 告警摘要
                   2. 证据链
                   3. 根因判断
@@ -219,6 +223,20 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
 
             logger.info(f"Replanner 决策: {action}")
 
+            evidence_gate = check_evidence_sufficiency(state)
+            if action == "respond" and (not evidence_gate.passed) and plan:
+                logger.info(f"Evidence Gate 未通过，覆盖 respond 为 continue: {evidence_gate.reason}")
+                return {
+                    "replan_events": [
+                        _build_replan_event(
+                            action="continue",
+                            reason=evidence_gate.reason,
+                            plan=plan,
+                            past_steps=past_steps,
+                        )
+                    ]
+                }
+
             if action == "respond" and _has_required_evidence_step(plan):
                 logger.info("剩余计划仍包含核心证据步骤，覆盖 respond 为 continue")
                 return {
@@ -325,11 +343,18 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
     else:
         # 没有剩余计划，生成最终响应
         logger.info("计划已执行完毕，生成最终响应")
+        evidence_gate = check_evidence_sufficiency(state)
+        if not evidence_gate.passed:
+            logger.warning(f"计划结束但 Evidence Gate 未通过: {evidence_gate.reason}")
         result = await _generate_response(state, llm)
         result["replan_events"] = [
             _build_replan_event(
                 action="respond",
-                reason="计划已执行完毕，生成最终报告。",
+                reason=(
+                    "计划已执行完毕，生成最终报告。"
+                    if evidence_gate.passed
+                    else f"计划已执行完毕但证据不足，生成低置信度报告：{evidence_gate.reason}"
+                ),
                 plan=plan,
                 past_steps=past_steps,
             )
@@ -435,6 +460,9 @@ async def _generate_response_with_fallback(llm: Any, messages: list) -> Response
         SystemMessage(content=dedent("""
             你是 AIOps Incident Copilot，请直接输出 Markdown 诊断报告。
             报告必须包含：告警摘要、证据链、根因判断、置信度、修复方案、待人工确认动作、回滚建议。
+            所有结论都必须绑定执行历史中的工具证据。
+            必须区分“已证实”“未发现”“不能排除”。
+            “未发现错误日志”不能写成“排除应用层问题”，只能写成“未发现 error/exception/timeout/failed 日志证据”。
             不要声称已经执行修复，只能提出待确认动作。
         """).strip())
     ]
@@ -494,10 +522,12 @@ def _has_required_evidence_step(plan: list) -> bool:
     """判断剩余计划里是否还有必须执行的核心证据步骤。"""
     required_keywords = (
         "query_metric_range",
+        "query_metric_summary",
         "query_cpu_metrics",
         "query_memory_metrics",
         "query_service_logs",
         "find_error_patterns",
+        "find_fault_signals",
         "get_service_health",
         "propose_remediation",
     )

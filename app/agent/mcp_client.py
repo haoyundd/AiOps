@@ -163,7 +163,10 @@ async def get_mcp_client_with_retry(
         force_new=force_new
     )
 
-
+#MultiServerMCPClient来自 langchain-mcp-adapters 库，它的作用是：
+#同时连接多个 MCP Server（cls、monitor、remediation）
+#自动发现每个 Server 上注册了哪些工具
+#把 MCP 工具转换成 LangChain Tool 对象，这样就能和 LangChain 的 bind_tools()、ToolNode 无缝配合
 def _create_mcp_client(
     servers: Dict[str, Dict[str, str]],
     tool_interceptors: Optional[List] = None

@@ -12,8 +12,9 @@ import os
 
 from app.config import config
 from loguru import logger
-from app.api import alerts, aiops, chat, demo, file, health, model
+from app.api import alerts, aiops, chat, demo, evaluations, file, health, model
 from app.core.milvus_client import milvus_manager
+from app.db.session import init_db
 
 
 @asynccontextmanager#装饰器
@@ -25,6 +26,11 @@ async def lifespan(app: FastAPI):#async表示异步 “这个函数可能会等�
     logger.info(f"📝 环境: {'开发' if config.debug else '生产'}")
     logger.info(f"🌐 监听地址: http://{config.host}:{config.port}")
     logger.info(f"📚 API 文档: http://{config.host}:{config.port}/docs")
+
+    # 初始化 Harness 持久化数据库，保存 incident、run、timeline 和 state。
+    logger.info("💾 正在初始化 Harness SQLite 数据库...")
+    init_db()
+    logger.info("✅ Harness 数据库初始化完成")
     
     # 连接 Milvus
     logger.info("🔌 正在连接 Milvus...")
@@ -68,6 +74,7 @@ app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
 app.include_router(alerts.router, prefix="/api", tags=["告警与事故"])#接收 Alertmanager 告警
 app.include_router(demo.router, prefix="/api", tags=["Demo故障注入"])
 app.include_router(model.router, prefix="/api", tags=["模型配置"])
+app.include_router(evaluations.router, prefix="/api", tags=["AIOps评测"])
 
 # 挂载静态文件
 static_dir = "static"#把前端静态文件挂载在static目录下，访问路径为/static

@@ -13,6 +13,7 @@ from app.core.llm_factory import llm_factory
 from app.tools import get_current_time, retrieve_knowledge
 from app.agent.mcp_client import get_mcp_client_with_retry
 from .state import PlanExecuteState
+from .tool_runtime import execute_planned_tool_step, precheck_tool_calls
 
 
 async def executor(state: PlanExecuteState) -> Dict[str, Any]:
@@ -50,6 +51,34 @@ async def executor(state: PlanExecuteState) -> Dict[str, Any]:
 
         # 合并所有工具
         all_tools = local_tools + mcp_tools
+
+        # Tool Runtime 优先执行 Planner 写明的工具调用。
+        # 这一步让固定 Playbook 不再完全依赖模型二次选择工具，减少参数漂移和越权调用。
+        runtime_result = await execute_planned_tool_step(task, all_tools)
+        if runtime_result is not None:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            execution_event = {
+                "step": task,
+                "status": runtime_result.status,
+                "duration_ms": duration_ms,
+                "tool_calls": runtime_result.tool_calls,
+                "tool_results": runtime_result.tool_results,
+                "tool_runtime": {
+                    "mode": "deterministic",
+                    "policy_decision": (
+                        runtime_result.policy_decision.to_dict()
+                        if runtime_result.policy_decision
+                        else None
+                    ),
+                },
+                "result_preview": runtime_result.result_text[:800],
+                "result_chars": len(runtime_result.result_text),
+            }
+            return {
+                "plan": plan[1:],
+                "past_steps": [(task, runtime_result.result_text)],
+                "execution_events": [execution_event],
+            }
 
         # 创建 LLM（绑定工具），模型由统一工厂管理，支持运行时切换。
         llm = llm_factory.create_chat_model(temperature=0, streaming=False)
@@ -90,6 +119,33 @@ async def executor(state: PlanExecuteState) -> Dict[str, Any]:
         tool_results: List[Dict[str, Any]] = []
         if tool_calls:
             logger.info(f"检测到 {len(tool_calls)} 个工具调用")
+
+            # 模型自主选择工具时也要先过策略预检，高风险修复和占位参数会被阻断。
+            blocked_runtime_result = precheck_tool_calls(tool_calls)
+            if blocked_runtime_result is not None:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                execution_event = {
+                    "step": task,
+                    "status": blocked_runtime_result.status,
+                    "duration_ms": duration_ms,
+                    "tool_calls": blocked_runtime_result.tool_calls,
+                    "tool_results": blocked_runtime_result.tool_results,
+                    "tool_runtime": {
+                        "mode": "llm_precheck",
+                        "policy_decision": (
+                            blocked_runtime_result.policy_decision.to_dict()
+                            if blocked_runtime_result.policy_decision
+                            else None
+                        ),
+                    },
+                    "result_preview": blocked_runtime_result.result_text[:800],
+                    "result_chars": len(blocked_runtime_result.result_text),
+                }
+                return {
+                    "plan": plan[1:],
+                    "past_steps": [(task, blocked_runtime_result.result_text)],
+                    "execution_events": [execution_event],
+                }
             
             # 使用 ToolNode 自动执行工具
             messages.append(llm_response)

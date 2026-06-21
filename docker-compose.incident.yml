@@ -191,6 +191,9 @@ services:
       XIAOMI_API_BASE: ${XIAOMI_API_BASE:-https://api.xiaomimimo.com/v1}
       XIAOMI_MODEL: ${XIAOMI_MODEL:-mimo-v2-flash}
       AIOPS_AUTO_DIAGNOSIS_ENABLED: ${AIOPS_AUTO_DIAGNOSIS_ENABLED:-true}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/volumes/aiops_harness.db}
+    volumes:
+      - ./volumes:/app/volumes
     ports:
       - "9900:9900"
     depends_on:

@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from app.models.aiops import AIOpsRequest
+from app.models.incident_command import IncidentCommandActionRequest
 from app.services.incident_service import incident_service
 
 router = APIRouter()
@@ -57,6 +58,77 @@ async def get_incident(incident_id: str):
         "code": 200,
         "message": "success",
         "data": incident,
+    }
+
+
+@router.get("/incidents/{incident_id}/runs")
+async def list_incident_runs(incident_id: str):
+    """查询某个 incident 的所有 Agent Run。"""
+    incident = incident_service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="incident 不存在")
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": incident_service.repository.list_runs_for_incident(incident_id),
+    }
+
+
+@router.get("/incidents/{incident_id}/command")
+async def get_incident_command_panel(incident_id: str):
+    """查询 incident 指挥面板，包含 ICM 状态、允许动作和动作流。"""
+    command_panel = incident_service.get_command_panel(incident_id)
+    if not command_panel:
+        raise HTTPException(status_code=404, detail="incident 不存在")
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": command_panel,
+    }
+
+
+@router.post("/incidents/{incident_id}/command/actions")
+async def append_incident_command_action(incident_id: str, request: IncidentCommandActionRequest):
+    """提交 incident 指挥动作，例如确认、分派、升级、缓解、恢复或重开。"""
+    try:
+        result = incident_service.append_command_action(
+            incident_id=incident_id,
+            action_type=request.action_type,
+            actor=request.actor,
+            note=request.note,
+            assignee=request.assignee,
+            severity=request.severity,
+            payload=request.payload,
+        )
+    except ValueError as e:
+        message = str(e)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from e
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": result,
+    }
+
+
+@router.get("/agent-runs/{run_id}")
+async def get_agent_run(run_id: str):
+    """查询一次 Agent Run 的概要、时间线和最新状态。"""
+    run = incident_service.repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="agent run 不存在")
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "run": run,
+            "timeline": incident_service.repository.list_timeline_for_run(run_id),
+            "state": incident_service.repository.get_state(run_id),
+        },
     }
 
 

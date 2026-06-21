@@ -4,6 +4,7 @@ Planner 节点：制定执行计划
 """
 
 import json
+import re
 from textwrap import dedent
 from typing import Dict, Any, List
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -49,7 +50,8 @@ planner_prompt = ChatPromptTemplate.from_messages(
                  - **如果有相关经验文档，请参考其中的方法和步骤制定计划**
                  - **不要使用“指定服务”“某指标”这类占位词，必须从用户输入中提取真实字段**
                  - 如果输入中包含服务名称、指标名称、开始时间，计划步骤里必须写出这些真实参数
-                 - AIOps 场景优先使用：query_metric_range/query_cpu_metrics、query_service_logs/find_error_patterns、get_service_health、retrieve_knowledge
+                 - AIOps 场景优先使用：query_metric_summary/query_metric_range/query_cpu_metrics、query_service_logs/find_error_patterns/find_fault_signals、get_service_health、retrieve_knowledge
+                 - 对 HighCPUUsage 必须先执行固定 Playbook：指标摘要、服务健康、错误日志、故障线索日志、辅助指标、修复建议
 
                 示例输入："分析当前系统的性能问题"
                 示例输出（假设有对应工具）：
@@ -129,21 +131,27 @@ async def planner(state: PlanExecuteState) -> Dict[str, Any]:
         # 步骤4: 创建 LLM 并生成计划，模型由统一工厂管理，支持运行时切换。
         llm = llm_factory.create_chat_model(temperature=0, streaming=False)
 
-        # 调用 LLM 生成计划。不同 OpenAI-compatible 供应商对 structured output 的支持不完全一致，
-        # 因此先尝试 LangChain 结构化输出，失败后退回普通 JSON 解析。
-        plan_result = await _generate_plan_with_fallback(
-            llm=llm,
-            input_text=input_text,
-            tools_description=tools_description,
-            experience_context=experience_context,
-        )
-
-        # 提取步骤列表
-        if isinstance(plan_result, Plan):
-            plan_steps = plan_result.steps
+        # Harness Playbook：对已知告警先生成确定性必查步骤，避免模型漏查关键证据。
+        playbook_steps = _build_alert_playbook_steps(input_text)
+        if playbook_steps:
+            logger.info(f"命中告警 Playbook，生成固定步骤 {len(playbook_steps)} 个")
+            plan_steps = playbook_steps
         else:
-            # 如果返回的是字典，提取 steps 字段
-            plan_steps = plan_result.get("steps", [])  # type: ignore
+            # 调用 LLM 生成计划。不同 OpenAI-compatible 供应商对 structured output 的支持不完全一致，
+            # 因此先尝试 LangChain 结构化输出，失败后退回普通 JSON 解析。
+            plan_result = await _generate_plan_with_fallback(
+                llm=llm,
+                input_text=input_text,
+                tools_description=tools_description,
+                experience_context=experience_context,
+            )
+
+            # 提取步骤列表
+            if isinstance(plan_result, Plan):
+                plan_steps = plan_result.steps
+            else:
+                # 如果返回的是字典，提取 steps 字段
+                plan_steps = plan_result.get("steps", [])  # type: ignore
 
         logger.info(f"计划已生成，共 {len(plan_steps)} 个步骤")
         for i, step in enumerate(plan_steps, 1):
@@ -159,6 +167,7 @@ async def planner(state: PlanExecuteState) -> Dict[str, Any]:
             "mcp_tool_count": len(mcp_tools),
             "tool_names": [getattr(tool, "name", str(tool)) for tool in all_tools],
             "plan_steps": plan_steps,
+            "playbook": "HighCPUUsage" if playbook_steps else "",
         }
 
         return {"plan": plan_steps, "planner_trace": planner_trace}
@@ -242,3 +251,60 @@ def _parse_json_object(content: str) -> Dict[str, Any]:
     if start >= 0 and end >= start:
         text = text[start:end + 1]
     return json.loads(text)
+
+
+def _build_alert_playbook_steps(input_text: str) -> List[str]:
+    """根据告警文本生成确定性 Playbook 步骤，作为 Harness 的诊断骨架。"""
+    alert_name = _extract_field(input_text, "告警名称") or ""
+    metric_name = _extract_field(input_text, "指标名称") or "demo_cpu_load"
+    service_name = _extract_field(input_text, "服务名称") or "demo-service"
+    threshold_text = _extract_field(input_text, "阈值")
+    start_time = _extract_field(input_text, "开始时间")
+    threshold = _normalize_threshold(threshold_text, default=0.8)
+
+    if alert_name != "HighCPUUsage" and metric_name != "demo_cpu_load":
+        return []
+
+    start_arg = f', start_time="{start_time}"' if start_time and "未提供" not in start_time else ""
+    return [
+        (
+            f'使用 query_metric_summary(metric_name="{metric_name}", service_name="{service_name}", '
+            f"threshold={threshold}{start_arg}) 查询告警指标摘要，确认 CPU 是否真实超过阈值。"
+        ),
+        f'使用 get_service_health(service_name="{service_name}") 查询服务是否仍被 Prometheus 抓取且 up=1。',
+        (
+            f'使用 find_error_patterns(service_name="{service_name}"{start_arg}) 查询 error、exception、'
+            "timeout、failed 日志；若返回 0，只能说明未发现错误日志证据，不能直接排除应用层问题。"
+        ),
+        (
+            f'使用 find_fault_signals(service_name="{service_name}"{start_arg}) 查询 cpu、warning、fault、'
+            "injected、latency 等故障线索日志，补齐非 error 证据。"
+        ),
+        (
+            f'分别使用 query_metric_summary 查询 demo_average_latency_seconds、demo_error_total、'
+            f'demo_fault_error_mode 三个辅助指标，service_name="{service_name}"，判断 CPU 高是否伴随慢响应或错误模式。'
+        ),
+        (
+            f'使用 propose_remediation(service_name="{service_name}", root_cause="CPU 高负载或 CPU 故障注入") '
+            "生成待人工确认的修复建议，不得直接执行修复。"
+        ),
+    ]
+
+
+def _extract_field(input_text: str, field_name: str) -> str | None:
+    """从 AIOpsRequest.to_diagnosis_task 生成的文本中提取真实字段。"""
+    pattern = rf"-\s*{re.escape(field_name)}:\s*(.+)"
+    match = re.search(pattern, input_text)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _normalize_threshold(value: str | None, default: float) -> float:
+    """把文本阈值转换为 float，缺失或非法时使用 Playbook 默认值。"""
+    if not value or "未提供" in value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default

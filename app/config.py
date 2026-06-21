@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     loki_url: str = "http://localhost:3100"
     demo_service_url: str = "http://localhost:9910"
 
+    # Harness 持久化数据库。默认使用本地 SQLite，便于演示和面试复现。
+    database_url: str = "sqlite:///./volumes/aiops_harness.db"
+
     @property
     def mcp_servers(self) -> Dict[str, Dict[str, Any]]:
         """获取完整的 MCP 服务器配置"""

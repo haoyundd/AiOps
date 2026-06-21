@@ -9,6 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 from loguru import logger
 
 from app.agent.mcp_client import get_mcp_client_with_retry
+from app.agent.aiops.tool_runtime import evaluate_tool_policy
 from app.models.aiops import AIOpsRequest, RemediationExecuteRequest
 from app.services.aiops_service import aiops_service
 
@@ -176,6 +177,15 @@ async def execute_remediation(request: RemediationExecuteRequest):
         raise HTTPException(status_code=400, detail="修复动作未获得用户确认，禁止执行")
 
     try:
+        # 人工修复入口也复用 Agent 工具策略，保证自动链路和人工链路的风险判断一致。
+        policy_decision = evaluate_tool_policy(
+            "execute_approved_remediation",
+            request.model_dump(),
+            execution_mode="manual_remediation",
+        )
+        if not policy_decision.allowed:
+            raise HTTPException(status_code=400, detail=policy_decision.reason)
+
         mcp_client = await get_mcp_client_with_retry()
         tools = await mcp_client.get_tools()
         execute_tool = next(

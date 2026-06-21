@@ -5,13 +5,13 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastmcp import FastMCP
 
-mcp = FastMCP("PrometheusMonitor")
-
+mcp = FastMCP("PrometheusMonitor")  # 创建 MCP 服务
+#monitor_server 容器内部用 httpx 直接调 Prometheus 的 HTTP API。
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090").rstrip("/")
 DEFAULT_SERVICE = os.getenv("DEMO_SERVICE_NAME", "demo-service")
 
@@ -90,7 +90,66 @@ def _query_metric_range_impl(
     return result
 
 
+def _extract_numeric_values(result: Dict[str, Any]) -> List[float]:
+    """从 Prometheus query_range 响应中抽取数值样本，用于生成证据摘要。"""
+    values: List[float] = []
+    for series in result.get("data", {}).get("result", []):
+        for _, raw_value in series.get("values", []):
+            try:
+                values.append(float(raw_value))
+            except (TypeError, ValueError):
+                continue
+    return values
+
+
+def _query_metric_summary_impl(
+    metric_name: str,
+    service_name: str = DEFAULT_SERVICE,
+    threshold: Optional[float] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    step: str = "30s",
+) -> Dict[str, Any]:
+    """查询指标区间并生成面向报告的摘要证据。"""
+    range_result = _query_metric_range_impl(
+        metric_name=metric_name,
+        service_name=service_name,
+        start_time=start_time,
+        end_time=end_time,
+        step=step,
+    )
+    values = _extract_numeric_values(range_result)
+    exceeded = False
+    if threshold is not None and values:
+        exceeded = max(values) > threshold
+
+    summary = {
+        "sample_count": len(values),
+        "last": values[-1] if values else None,
+        "min": min(values) if values else None,
+        "max": max(values) if values else None,
+        "avg": round(sum(values) / len(values), 6) if values else None,
+        "threshold": threshold,
+        "exceeded": exceeded,
+    }
+    return {
+        "evidence_type": "metric_summary",
+        "source": "prometheus",
+        "metric_name": metric_name,
+        "service_name": service_name,
+        "query": range_result["query"],
+        "summary": summary,
+        "range": {
+            "start": range_result["query_params"].get("start"),
+            "end": range_result["query_params"].get("end"),
+            "step": step,
+        },
+        "raw_status": range_result.get("status"),
+    }
+
+   # 注册工具
 @mcp.tool()
+
 def query_metric_range(
     metric_name: str,
     service_name: str = DEFAULT_SERVICE,
@@ -99,6 +158,7 @@ def query_metric_range(
     step: str = "30s",
 ) -> Dict[str, Any]:
     """查询指定服务的 Prometheus 区间指标。"""
+    # 工具实现：调 Prometheus API
     return _query_metric_range_impl(metric_name, service_name, start_time, end_time, step)
 
 
@@ -116,6 +176,26 @@ def query_cpu_metrics(
         start_time=start_time,
         end_time=end_time,
         step=interval,
+    )
+
+
+@mcp.tool()
+def query_metric_summary(
+    metric_name: str,
+    service_name: str = DEFAULT_SERVICE,
+    threshold: Optional[float] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    step: str = "30s",
+) -> Dict[str, Any]:
+    """查询指标摘要，返回 last/min/max/avg/exceeded 等可直接引用的证据。"""
+    return _query_metric_summary_impl(
+        metric_name=metric_name,
+        service_name=service_name,
+        threshold=threshold,
+        start_time=start_time,
+        end_time=end_time,
+        step=step,
     )
 
 
