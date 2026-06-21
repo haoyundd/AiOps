@@ -4,6 +4,7 @@
 计划是否覆盖必查工具、证据是否足够、报告是否出现危险结论。
 """
 
+import json
 from typing import Any, Dict, List, Tuple
 
 from pydantic import BaseModel, Field
@@ -45,7 +46,7 @@ FORBIDDEN_REPORT_PHRASES = [
 
 
 class AIOpsEvalCase(BaseModel):
-    """一次固定回放评测场景。"""
+    """一次固定或真实 Run 回放评测场景。"""
 
     id: str = Field(description="评测场景 ID")
     name: str = Field(description="评测场景名称")
@@ -121,6 +122,21 @@ def evaluate_case(case: AIOpsEvalCase) -> AIOpsEvalResult:
     )
 
 
+def evaluate_agent_run(run: Dict[str, Any], timeline: List[Dict[str, Any]]) -> AIOpsEvalResult:
+    """从真实 AgentRun 的 timeline 和最终报告中抽取诊断产物并执行质量审计。"""
+    run_id = str(run.get("id") or "unknown")
+    case = AIOpsEvalCase(
+        id=f"agent_run:{run_id}",
+        name=f"真实 AgentRun 质量审计 {run_id}",
+        input_text=_extract_agent_run_input(run, timeline),
+        plan=_extract_agent_run_plan(timeline),
+        past_steps=_extract_agent_run_past_steps(timeline),
+        report=str(run.get("final_report") or ""),
+        expected_pass=True,
+    )
+    return evaluate_case(case)
+
+
 def build_builtin_eval_cases() -> List[AIOpsEvalCase]:
     """构造内置回放用例，覆盖通过和失败场景。"""
     plan = _build_alert_playbook_steps(HIGH_CPU_INPUT)
@@ -140,11 +156,11 @@ def build_builtin_eval_cases() -> List[AIOpsEvalCase]:
             "- 未发现 error/exception/timeout/failed 日志证据。",
             "- 发现 cpu spike injected warning 线索。",
             "## 根因判断",
-            "已证实 CPU 高负载；未发现错误日志，但不能排除应用层非 error 级别问题。",
+            "已证实 CPU 高负载；未发现错误日志，但当前证据只说明没有命中 error 级别日志。",
         ]
     )
     bad_report = safe_report.replace(
-        "未发现错误日志，但不能排除应用层非 error 级别问题。",
+        "未发现错误日志，但当前证据只说明没有命中 error 级别日志。",
         "未发现错误日志，因此排除应用层问题。",
     )
 
@@ -177,6 +193,78 @@ def build_builtin_eval_cases() -> List[AIOpsEvalCase]:
             expected_pass=False,
         ),
     ]
+
+
+def _extract_agent_run_input(run: Dict[str, Any], timeline: List[Dict[str, Any]]) -> str:
+    """从 plan_created 事件中提取原始告警摘要，缺失时回退到 Run 基本信息。"""
+    for event in timeline:
+        payload = event.get("payload") or {}
+        trace = payload.get("planner_trace") or {}
+        for key in ("input_preview", "input", "raw_input"):
+            if trace.get(key):
+                return str(trace[key])
+            if payload.get(key):
+                return str(payload[key])
+    return " ".join(
+        str(value)
+        for value in [run.get("incident_id"), run.get("model_provider"), run.get("model_name")]
+        if value
+    )
+
+
+def _extract_agent_run_plan(timeline: List[Dict[str, Any]]) -> List[str]:
+    """从真实 timeline 的 plan_created 事件中提取计划步骤。"""
+    for event in timeline:
+        if event.get("type") != "plan_created":
+            continue
+        payload = event.get("payload") or {}
+        trace = payload.get("planner_trace") or {}
+        plan = payload.get("plan") or trace.get("plan_steps") or trace.get("plan") or []
+        if isinstance(plan, list):
+            return [str(step) for step in plan if str(step).strip()]
+    return []
+
+
+def _extract_agent_run_past_steps(timeline: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """从真实 timeline 的 tool_executed 事件中提取工具证据。"""
+    past_steps: List[Tuple[str, str]] = []
+    for event in timeline:
+        if event.get("type") != "tool_executed":
+            continue
+        payload = event.get("payload") or {}
+        execution = payload.get("execution_event") or payload
+        tool_calls = execution.get("tool_calls") or []
+        tool_results = execution.get("tool_results") or []
+        result_text = _compact_evidence_text(execution, tool_results)
+
+        if not tool_calls:
+            past_steps.append((str(event.get("message") or "tool_executed"), result_text))
+            continue
+
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.get("name") or "unknown_tool")
+            args_text = _json_text(tool_call.get("args") or {})
+            past_steps.append((tool_name, f"args={args_text}\n{result_text}"))
+    return past_steps
+
+
+def _compact_evidence_text(execution: Dict[str, Any], tool_results: List[Dict[str, Any]]) -> str:
+    """把工具执行结果压成 Evidence Gate 可识别的短文本。"""
+    parts = [str(execution.get("step") or ""), str(execution.get("result_preview") or "")]
+    for tool_result in tool_results:
+        if isinstance(tool_result, dict):
+            parts.append(str(tool_result.get("content_preview") or tool_result.get("content") or ""))
+        else:
+            parts.append(str(tool_result))
+    return "\n".join(part for part in parts if part)
+
+
+def _json_text(value: Any) -> str:
+    """安全序列化工具参数，避免复杂对象影响评测。"""
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
 
 
 def _check_plan_coverage(plan: List[str], required_tools: List[str]) -> AIOpsEvalCheck:

@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.config import config
 from app.db.models import (
+    AgentRunEvaluationRecord,
     AgentRunRecord,
     AgentStateRecord,
     IncidentCommandActionRecord,
@@ -22,7 +23,7 @@ MAX_PAYLOAD_CHARS = 4000
 
 
 def _json_dumps(value: Any, max_chars: int | None = None) -> str:
-    """把复杂对象转成 JSON 字符串，并限制超长 payload。"""
+    """把复杂对象转成 JSON 字符串，并按需限制超长 payload。"""
     text = json.dumps(value or {}, ensure_ascii=False, default=str)
     if max_chars and len(text) > max_chars:
         return json.dumps(
@@ -47,12 +48,12 @@ def _json_loads(value: str | None, default: Any) -> Any:
 
 
 def _iso(value: datetime | None) -> str:
-    """统一把数据库时间转成 API 已使用的 ISO 字符串。"""
+    """统一把数据库时间转成 API 使用的 ISO 字符串。"""
     return value.isoformat() if value else ""
 
 
 class IncidentRepository:
-    """封装 incident、timeline、agent run 和 state 的持久化读写。"""
+    """封装 incident、timeline、agent run、state 和审计结果的持久化读写。"""
 
     def __init__(self, database_url: str | None = None) -> None:
         """初始化 Repository，并确保数据库表存在。"""
@@ -222,6 +223,31 @@ class IncidentRepository:
                 "state": _json_loads(record.state_json, {}),
             }
 
+    def save_run_evaluation(self, run_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """保存一次真实 AgentRun 的审计结果，供后续回查和复评。"""
+        with session_scope(self.database_url) as session:
+            record = AgentRunEvaluationRecord(
+                id=uuid.uuid4().hex,
+                run_id=run_id,
+                passed=bool(result.get("passed")),
+                score=int(result.get("score") or 0),
+                result_json=_json_dumps(result),
+                created_at=utc_now(),
+            )
+            session.add(record)
+            session.flush()
+            return self._evaluation_to_dict(record)
+
+    def list_evaluations_for_run(self, run_id: str) -> List[Dict[str, Any]]:
+        """查询某次 AgentRun 的全部审计历史，按创建时间倒序返回。"""
+        with session_scope(self.database_url) as session:
+            records = session.scalars(
+                select(AgentRunEvaluationRecord)
+                .where(AgentRunEvaluationRecord.run_id == run_id)
+                .order_by(AgentRunEvaluationRecord.created_at.desc())
+            ).all()
+            return [self._evaluation_to_dict(record) for record in records]
+
     def save_state(self, run_id: str, incident_id: str, state: Dict[str, Any]) -> None:
         """保存 Agent 最新状态快照，避免服务重启后过程完全丢失。"""
         with session_scope(self.database_url) as session:
@@ -326,6 +352,17 @@ class IncidentRepository:
             "final_report": record.final_report,
         }
 
+    def _evaluation_to_dict(self, record: AgentRunEvaluationRecord) -> Dict[str, Any]:
+        """把 ORM 审计结果转换成 API 可返回的字典。"""
+        return {
+            "id": record.id,
+            "run_id": record.run_id,
+            "passed": record.passed,
+            "score": record.score,
+            "result": _json_loads(record.result_json, {}),
+            "created_at": _iso(record.created_at),
+        }
+
     def _parse_dt(self, value: Any) -> datetime | None:
         """兼容旧代码传入的 ISO 字符串时间。"""
         if isinstance(value, datetime):
@@ -338,7 +375,7 @@ class IncidentRepository:
         return None
 
     def _command_action_to_dict(self, record: IncidentCommandActionRecord) -> Dict[str, Any]:
-        """把 ORM 指挥动作转成 API 可返回的字典。"""
+        """把 ORM 指挥动作转换成 API 可返回的字典。"""
         return {
             "id": record.id,
             "incident_id": record.incident_id,

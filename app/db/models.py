@@ -2,12 +2,12 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utc_now() -> datetime:
-    """生成统一的 UTC 时间，便于跨容器和本地环境排序。"""
+    """生成统一 UTC 时间，便于跨容器和本地环境排序。"""
     return datetime.now(timezone.utc)
 
 
@@ -97,6 +97,11 @@ class AgentRunRecord(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    evaluations: Mapped[list["AgentRunEvaluationRecord"]] = relationship(
+        back_populates="agent_run",
+        cascade="all, delete-orphan",
+        order_by="AgentRunEvaluationRecord.created_at",
+    )
 
 
 class AgentStateRecord(Base):
@@ -111,6 +116,21 @@ class AgentStateRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     agent_run: Mapped[AgentRunRecord] = relationship(back_populates="state")
+
+
+class AgentRunEvaluationRecord(Base):
+    """AgentRun 审计结果表，记录每次真实 Run 评测的可回放结果。"""
+
+    __tablename__ = "agent_run_evaluations"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    passed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    agent_run: Mapped[AgentRunRecord] = relationship(back_populates="evaluations")
 
 
 class IncidentCommandActionRecord(Base):

@@ -15,15 +15,15 @@ router = APIRouter()
 @router.post("/alerts/webhook")
 async def receive_alertmanager_webhook(payload: Dict[str, Any]):
     """接收 Alertmanager webhook，并自动创建 incident、启动诊断。"""
-    alerts = payload.get("alerts", [])## 第 16 行：获取告警列表
+    alerts = payload.get("alerts", [])
     if not isinstance(alerts, list):
         raise HTTPException(status_code=400, detail="Alertmanager payload 缺少 alerts 列表")
 
     incidents = []
-    for alert in alerts:# 第 21 行：遍历每条告警
+    for alert in alerts:
         if not isinstance(alert, dict):
             continue
-        incident = incident_service.create_or_update_from_alert(alert)# 第 25 行：创建 incident
+        incident = incident_service.create_or_update_from_alert(alert)
         incidents.append(incident)
 
     logger.info(f"收到 Alertmanager webhook，处理告警数量: {len(incidents)}")
@@ -116,7 +116,7 @@ async def append_incident_command_action(incident_id: str, request: IncidentComm
 
 @router.get("/agent-runs/{run_id}")
 async def get_agent_run(run_id: str):
-    """查询一次 Agent Run 的概要、时间线和最新状态。"""
+    """查询一次 Agent Run 的概要、时间线、最新状态和审计历史。"""
     run = incident_service.repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="agent run 不存在")
@@ -128,6 +128,7 @@ async def get_agent_run(run_id: str):
             "run": run,
             "timeline": incident_service.repository.list_timeline_for_run(run_id),
             "state": incident_service.repository.get_state(run_id),
+            "evaluations": incident_service.repository.list_evaluations_for_run(run_id),
         },
     }
 
