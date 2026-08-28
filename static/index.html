@@ -1,172 +1,130 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智能OnCall助手</title>
-    <link rel="stylesheet" href="/static/styles.css">
-    <!-- Markdown 渲染库 -->
-    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
-    <!-- 代码高亮库（可选） -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/es/highlight.min.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>断点 · Incident Signal Desk</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="app-layout">
-        <!-- 左侧边栏 -->
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <h2 class="sidebar-title">智能OnCall助手</h2>
-            </div>
-            
-            <div class="sidebar-content">
-                <button class="new-chat-btn" id="newChatBtn">
-                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                    </svg>
-                    <span>新建对话</span>
-                </button>
-                
-                <div class="chat-history-section">
-                    <div class="history-header">
-                        <span>近期对话</span>
-                    </div>
-                    <div class="chat-history-list" id="chatHistoryList">
-                        <!-- 历史对话列表将在这里动态生成 -->
-                    </div>
-                </div>
+  <div class="login-gate" id="loginGate" hidden>
+    <form class="login-panel" id="loginForm">
+      <p class="eyebrow">AIOPS CONTROL PLANE</p>
+      <h1>先确认你是谁，<br>再查看系统发生了什么。</h1>
+      <label>用户名<input id="loginUsername" autocomplete="username" value="admin" required></label>
+      <label>密码<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+      <p class="form-error" id="loginError" role="alert"></p>
+      <button class="primary-button" type="submit">进入事件工作台</button>
+      <p class="login-hint">初始账号由 ADMIN_USERNAME / ADMIN_PASSWORD 创建，仓库中不保存默认密码。</p>
+    </form>
+  </div>
 
-                <div class="incident-section">
-                    <div class="history-header">
-                        <span>自动告警</span>
-                    </div>
-                    <div class="fault-actions">
-                        <button class="fault-btn" id="injectCpuFaultBtn">CPU 故障</button>
-                        <button class="fault-btn" id="injectSlowFaultBtn">慢响应</button>
-                        <button class="fault-btn" id="injectErrorFaultBtn">错误日志</button>
-                        <button class="fault-btn clear" id="clearFaultsBtn">恢复</button>
-                    </div>
-                    <div class="incident-status idle" id="incidentStatus">
-                        当前无自动告警，点击上方按钮制造演示故障。
-                    </div>
-                    <div class="incident-list" id="incidentList">
-                        <div class="incident-empty">等待 Alertmanager 自动告警</div>
-                    </div>
-                </div>
+  <div class="shell" id="appShell" hidden>
+    <aside class="rail">
+      <a class="brand" href="#" aria-label="断点首页">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span><b>断点</b><small>SIGNAL DESK</small></span>
+      </a>
+      <nav aria-label="主导航">
+        <button class="nav-item is-active" data-view="incidents"><span>事件</span><kbd>I</kbd></button>
+        <button class="nav-item" data-view="chat"><span>追问</span><kbd>C</kbd></button>
+        <button class="nav-item" data-view="runbooks"><span>手册</span><kbd>R</kbd></button>
+      </nav>
+      <div class="rail-foot">
+        <div class="identity"><span class="presence"></span><span><b id="currentUser">—</b><small id="currentRole">viewer</small></span></div>
+        <button class="text-button" id="logoutButton">退出</button>
+      </div>
+    </aside>
 
-                <div class="model-section">
-                    <div class="history-header">
-                        <span>模型设置</span>
-                    </div>
-                    <div class="model-current" id="modelCurrent">模型配置加载中...</div>
-                    <select class="model-select" id="modelProviderSelect">
-                        <option value="dashscope">阿里 DashScope</option>
-                        <option value="xiaomi">小米 MiMo</option>
-                        <option value="custom">自定义</option>
-                    </select>
-                    <input class="model-input" id="modelNameInput" placeholder="模型名称，例如 mimo-v2-flash">
-                    <input class="model-input" id="modelBaseUrlInput" placeholder="Base URL">
-                    <input class="model-input" id="modelApiKeyInput" type="password" placeholder="API Key，不填则沿用后端配置">
-                    <div class="model-cost-mode" id="aiopsCostMode">诊断模式加载中...</div>
-                    <button class="model-save-btn" id="modelSaveBtn">切换模型</button>
-                    <div class="model-hint">只切换聊天和 AIOps 推理模型，不改变 Milvus 向量库。</div>
-                </div>
-                 
-            </div>
-        </aside>
-
-        <!-- 主内容区域 -->
-        <main class="main-content">
-            <div class="incident-live-banner idle" id="incidentLiveBanner">
-                <span class="incident-live-dot"></span>
-                <span>自动告警监听中，等待 Prometheus / Alertmanager 推送。</span>
-            </div>
-            <button class="ai-ops-top-btn" id="aiOpsSidebarBtn">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span>AI Ops</span>
-            </button>
-            <div class="chat-container">
-                <div class="welcome-greeting" id="welcomeGreeting">
-                    <p>你好！我是智能Oncall小助手</p>
-                </div>
-                <div class="chat-messages" id="chatMessages">
-                </div>
-                
-                <div class="chat-input-container">
-                    <div class="input-group-wrapper">
-                        <div class="input-wrapper">
-                            <input type="text" id="messageInput" placeholder="问问智能OnCall助手" maxlength="1000" class="message-input">
-                            <div class="input-bottom-bar">
-                                <div class="tools-btn-wrapper">
-                                    <button class="tools-btn" id="toolsBtn" title="更多选项">
-                                        <svg class="tools-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
-                                            <circle cx="19" cy="12" r="1.5" fill="currentColor"/>
-                                            <circle cx="5" cy="12" r="1.5" fill="currentColor"/>
-                                        </svg>
-                                    </button>
-                                    <div class="tools-menu" id="toolsMenu">
-                                        <div class="tools-menu-item" id="uploadFileItem">
-                                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                            <span>上传文件</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="right-actions">
-                                    <div class="mode-selector-wrapper">
-                                        <button class="mode-selector-btn" id="modeSelectorBtn">
-                                            <span id="currentModeText">快速</span>
-                                            <svg class="dropdown-arrow" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                        </button>
-                                        <div class="mode-dropdown" id="modeDropdown">
-                                            <div class="dropdown-header">选择对话方式</div>
-                                            <div class="dropdown-item active" data-mode="quick">
-                                                <div class="dropdown-item-main">
-                                                    <span>快速</span>
-                                                    <span class="badge-new">新</span>
-                                                </div>
-                                                <div class="dropdown-item-sub">快速对话</div>
-                                            </div>
-                                            <div class="dropdown-item" data-mode="stream">
-                                                <div class="dropdown-item-main">
-                                                    <span>流式</span>
-                                                </div>
-                                                <div class="dropdown-item-sub">流式对话</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <button class="send-btn-circle" id="sendButton" title="发送">
-                                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <input type="file" id="fileInput" accept=".txt,.md,.markdown" style="display: none;">
-                </div>
-            </div>
-        </main>
-    </div>
-
-    <!-- 加载遮罩层 -->
-    <div id="loadingOverlay" class="loading-overlay">
-        <div class="loading-content">
-            <div class="loading-spinner"></div>
-            <div class="loading-text">智能运维分析中，请稍候...</div>
-            <div class="loading-subtext">后端正在处理，请耐心等待</div>
+    <main>
+      <header class="topline">
+        <div>
+          <p class="eyebrow" id="viewEyebrow">INCIDENT QUEUE</p>
+          <h1 id="viewTitle">真实信号，按证据说话</h1>
         </div>
-    </div>
+        <div class="source-strip" aria-label="观测数据源">
+          <span><i class="source-dot metric"></i>Prometheus</span>
+          <span><i class="source-dot log"></i>Loki</span>
+          <span><i class="source-dot trace"></i>Tempo</span>
+        </div>
+      </header>
 
-    <script src="/static/app.js"></script>
+      <section class="view is-active" id="incidentsView">
+        <div class="pulse-board" aria-label="事件概览">
+          <article><span>待调查</span><strong id="receivedCount">0</strong><small>RECEIVED</small></article>
+          <article><span>调查中</span><strong id="diagnosingCount">0</strong><small>DIAGNOSING</small></article>
+          <article><span>已定位</span><strong id="diagnosedCount">0</strong><small>DIAGNOSED</small></article>
+          <article><span>证据不足</span><strong id="inconclusiveCount">0</strong><small>INCONCLUSIVE</small></article>
+          <div class="pulse-line" aria-hidden="true"><i></i></div>
+        </div>
+
+        <div class="workbench">
+          <section class="queue-panel">
+            <div class="panel-head">
+              <div><span class="section-code">A</span><h2>事件队列</h2></div>
+              <button class="icon-button" id="refreshIncidents" title="刷新">↻</button>
+            </div>
+            <div class="filters" id="incidentFilters">
+              <button class="is-active" data-status="">全部</button>
+              <button data-status="DIAGNOSING">调查中</button>
+              <button data-status="DIAGNOSED">已定位</button>
+              <button data-status="INCONCLUSIVE">待补证</button>
+            </div>
+            <div class="incident-list" id="incidentList">
+              <div class="empty-state"><b>还没有事件</b><span>Alertmanager 发送第一条真实告警后，它会出现在这里。</span></div>
+            </div>
+          </section>
+
+          <section class="detail-panel" id="incidentDetail">
+            <div class="detail-empty">
+              <div class="crosshair" aria-hidden="true"></div>
+              <h2>选择一条事件</h2>
+              <p>查看告警时间线、根因假设，以及来自指标、日志和调用链的证据。</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="chatView">
+        <div class="page-grid">
+          <section class="page-intro">
+            <span class="section-code">B</span>
+            <h2>围绕一次事件继续追问</h2>
+            <p>聊天不会获得执行权限。回答只使用已落库的 Incident 结论，并在证据不足时明确说明。</p>
+          </section>
+          <section class="chat-panel">
+            <label>关联事件<select id="chatIncident"><option value="">不关联事件</option></select></label>
+            <div class="chat-log" id="chatLog"><p class="assistant-message">选择一条事件，或者直接询问系统的诊断方式。</p></div>
+            <form class="chat-form" id="chatForm">
+              <textarea id="chatMessage" rows="3" placeholder="例如：为什么判断是 Redis 延迟，而不是 CPU 饱和？" required></textarea>
+              <button class="primary-button" type="submit">发送追问</button>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="runbooksView">
+        <div class="page-grid">
+          <section class="page-intro">
+            <span class="section-code">C</span>
+            <h2>把排障经验变成可检索证据</h2>
+            <p>Runbook 会分块写入 PostgreSQL/pgvector。没有 Embedding Key 时仍可用文本检索，不影响系统启动。</p>
+          </section>
+          <form class="runbook-form" id="runbookForm">
+            <label>标题<input id="runbookTitle" placeholder="MerchantFlow Redis 超时排查" required></label>
+            <label>服务<input id="runbookService" value="merchantflow" required></label>
+            <label>标签<input id="runbookTags" placeholder="redis, latency, merchantflow"></label>
+            <label>正文<textarea id="runbookContent" rows="14" placeholder="症状、需要验证的证据、处理步骤与恢复验证……" required></textarea></label>
+            <p class="form-error" id="runbookError"></p>
+            <button class="primary-button" type="submit">写入 Runbook</button>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

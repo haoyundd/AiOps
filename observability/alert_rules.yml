@@ -1,41 +1,54 @@
 groups:
-  - name: demo-service.rules
+  - name: merchantflow-real-faults
     rules:
-      - alert: HighCPUUsage
-        expr: demo_cpu_load{service="demo-service"} > 0.8
-        for: 15s
+      - alert: MerchantFlowHighCPU
+        expr: max(process_cpu_usage{job="merchantflow"}) > 0.80
+        for: 1m
+        labels:
+          severity: warning
+          service: merchantflow
+          environment: local
+          metric: process_cpu_usage
+          threshold: "0.80"
+        annotations:
+          summary: MerchantFlow process CPU is above 80%
+          description: Real JVM process CPU has remained above the configured threshold.
+
+      - alert: MerchantFlowHighLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job="merchantflow"}[5m]))) > 1
+        for: 1m
+        labels:
+          severity: warning
+          service: merchantflow
+          environment: local
+          metric: http_server_requests_seconds
+          threshold: "1.0"
+        annotations:
+          summary: MerchantFlow HTTP P95 latency is above one second
+          description: Request latency is derived from real Micrometer HTTP histograms.
+
+      - alert: MerchantFlowHighErrorRate
+        expr: sum(rate(http_server_requests_seconds_count{job="merchantflow",status=~"5.."}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{job="merchantflow"}[5m])), 0.001) > 0.05
+        for: 1m
         labels:
           severity: critical
-          service: demo-service
+          service: merchantflow
           environment: local
-          metric: demo_cpu_load
-          threshold: "0.8"
+          metric: http_server_requests_seconds_count
+          threshold: "0.05"
         annotations:
-          summary: "demo-service CPU 负载过高"
-          description: "demo-service 的 demo_cpu_load 已超过 0.8，触发自动 AIOps 诊断。"
+          summary: MerchantFlow 5xx rate is above 5%
+          description: Real HTTP failures have exceeded the error-rate threshold.
 
-      - alert: SlowResponse
-        expr: demo_average_latency_seconds{service="demo-service"} > 0.8
-        for: 15s
+      - alert: MerchantFlowHealthDown
+        expr: probe_success{job="merchantflow-health"} == 0
+        for: 30s
         labels:
-          severity: warning
-          service: demo-service
+          severity: critical
+          service: merchantflow
           environment: local
-          metric: demo_average_latency_seconds
-          threshold: "0.8"
-        annotations:
-          summary: "demo-service 响应变慢"
-          description: "demo-service 平均响应时间超过 0.8 秒，触发自动 AIOps 诊断。"
-
-      - alert: ErrorModeEnabled
-        expr: demo_fault_error_mode{service="demo-service"} == 1
-        for: 15s
-        labels:
-          severity: warning
-          service: demo-service
-          environment: local
-          metric: demo_fault_error_mode
+          metric: probe_success
           threshold: "1"
         annotations:
-          summary: "demo-service 错误故障注入已开启"
-          description: "demo-service error_mode 开关为 1，触发自动 AIOps 诊断。"
+          summary: MerchantFlow health endpoint is down
+          description: Blackbox probing cannot obtain a successful health response.

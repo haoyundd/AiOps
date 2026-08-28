@@ -56,7 +56,9 @@ logs/
 
 # Database
 *.db
+*.db-journal
 *.sqlite
+data/
 
 # Milvus
 volumes/

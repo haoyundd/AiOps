@@ -1,0 +1,15 @@
+[
+  {
+    "case_id": "cpu-01",
+    "run": 1,
+    "ground_truth": "CPU_SATURATION",
+    "predicted_category": "CPU_SATURATION",
+    "required_evidence": ["process_cpu_usage", "http p95"],
+    "observed_evidence": ["process_cpu_usage", "http p95"],
+    "unsupported_claims": 0,
+    "dangerous_tool_calls": 0,
+    "alert_latency_seconds": 45.2,
+    "diagnosis_seconds": 73.1,
+    "manual_baseline_seconds": 310.0
+  }
+]

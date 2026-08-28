@@ -1,127 +1,189 @@
-# 智能运维 Agent 系统
+# AIOps Incident Agent
 
-面向告警诊断与半自动修复的 AIOps Agent 系统。项目基于 FastAPI、LangGraph、MCP、Milvus 构建，接入 Prometheus、Loki、Alertmanager 等真实观测数据源，形成从告警接入、证据收集、诊断分析到白名单修复的闭环。
+面向容器化业务系统的证据驱动故障诊断 Agent。首个真实目标是相邻仓库 [MerchantFlow-Pro](https://github.com/haoyundd/MerchantFlow-Pro)：Prometheus、Loki、Tempo 和健康检查采集实际运行信号，Alertmanager 创建 Incident，LangGraph 对多个根因假设逐项取证，最终输出可追溯的结论或明确的 `INCONCLUSIVE`。
 
-## 核心能力
+本项目不把“接口返回预设错误”当作真实诊断。单元测试可以使用 Fake 工具，演示与评测使用 k6 真实流量、容器 CPU 配额以及 Toxiproxy TCP 延迟/中断。
 
-- 真实告警驱动：接收 Alertmanager webhook，自动创建 incident 并触发诊断流程。
-- 多阶段 Agent：基于 LangGraph 组织 Planner / Executor / Replanner 流程，避免单轮模型直接下结论。
-- MCP 工具化：将指标查询、日志检索、健康检查和修复动作封装为统一工具层。
-- RAG 知识检索：基于 Milvus 构建运维知识库，支持故障案例、处理手册和排障经验召回。
-- 模型可切换：支持运行时切换 Xiaomi MiMo、DashScope 以及自定义 OpenAI-compatible 模型。
-- 安全修复：支持用户确认后的白名单修复动作，避免 Agent 直接执行高风险操作。
-- 容器化部署：通过 Docker Compose 编排多服务，提升环境一致性与本地复现效率。
+## 系统链路
 
-## 技术栈
+```mermaid
+flowchart LR
+  K6[k6 / 用户请求] --> MF[MerchantFlow-Pro]
+  MF --> DEP[MySQL / Redis / RocketMQ]
+  MF --> PROM[Prometheus]
+  MF --> ALLOY[Grafana Alloy]
+  ALLOY --> LOKI[Loki]
+  ALLOY --> TEMPO[Tempo]
+  PROM --> AM[Alertmanager]
+  AM --> API[FastAPI API]
+  API --> PG[(PostgreSQL + pgvector)]
+  PG --> WORKER[Diagnosis Worker]
+  WORKER --> GRAPH[LangGraph Evidence Graph]
+  GRAPH --> MCP[Read-only Ops MCP]
+  MCP --> PROM
+  MCP --> LOKI
+  MCP --> TEMPO
+```
 
-`FastAPI / LangGraph / LangChain / MCP / Milvus / Prometheus / Loki / Alertmanager / Docker / Pydantic / httpx / SSE`
+## 已实现能力
 
-## 系统架构
+- PostgreSQL 持久化 Incident、事件、诊断任务、假设、证据、工具调用、审批与审计；pgvector 保存 Runbook 分块。
+- API 与 Worker 分离，Worker 使用数据库队列和 `FOR UPDATE SKIP LOCKED` 领取任务。
+- LangGraph PostgreSQL Checkpointer；SQLite 仅作为无 Docker 的本地测试后备。
+- 指标、日志、Trace、健康检查统一成带风险、超时、重试和查询上限的只读工具契约。
+- 根因假设只根据已采集证据打分；至少两个数据源可用且置信度达到阈值才给出确定结论。
+- `viewer / operator / admin` 三角色 JWT 权限；Alertmanager 支持共享密钥或 HMAC。
+- MerchantFlow 永久只读；仅在双开关启用的隔离 lab 中执行固定 action ID，并在执行后验证真实健康状态。
+- 事件工作台、证据轨道、时间线、Incident 追问和 Runbook 管理。
+- 3 类 15 个真实故障评测案例及可重复计算的评测脚本。
+
+## 目录
 
 ```text
-前端 / Web
-   -> FastAPI API
-      -> AIOps Agent (Planner -> Executor -> Replanner)
-         -> MCP Client
-            -> mcp-monitor   (Prometheus 指标 / 服务健康)
-            -> mcp-log       (Loki 日志 / 错误模式)
-            -> mcp-remediation (白名单修复)
-         -> Milvus (运维知识库)
-         -> Alertmanager / Prometheus / Loki / demo-service
+app/api/v1/              版本化 API、JWT 与 RBAC
+app/agent/evidence_graph.py
+                         证据采集、假设排序和报告工作流
+app/observability/       Prometheus/Loki/Tempo/health 只读适配器
+app/services/            Incident、Runbook、审批和恢复服务
+mcp_servers/ops_server.py
+                         统一只读 Ops MCP 服务
+observability/           Prometheus、Alertmanager、Loki、Tempo、Alloy、Grafana
+evaluation/              15 个真实故障案例及结果格式
+static/                  原生 ES Modules 事件工作台
+alembic/                 PostgreSQL/pgvector 数据迁移
 ```
 
-## 项目结构
+## 本地启动
+
+### 1. 准备两个相邻仓库
 
 ```text
-app/                # API、Agent、服务层、模型定义
-mcp_servers/        # MCP Server：monitor / log / remediation
-demo_service/       # 可注入故障的演示服务
-observability/      # Prometheus、Loki、Alertmanager、Grafana 配置
-aiops-docs/         # 运维知识文档
-tests/              # 单元测试与集成测试
-docker-compose.incident.yml
-vector-database.yml
+yunwei/
+├─ haoyundd/
+└─ MerchantFlow-Pro/
 ```
 
-## 快速开始
+### 2. 配置密钥
 
-### 1. 准备环境
+两个仓库都没有可用默认密码：
 
-- Python 3.10+
-- Docker Desktop
-- 一个可用的大模型 API Key（推荐 Xiaomi MiMo 或 DashScope）
-- Milvus、Prometheus、Loki、Alertmanager 等容器环境
-
-### 2. 配置环境变量
-
-复制一份 `.env.example` 为 `.env`，根据本地环境补充 Key 和地址。
-
-### 3. 启动容器化环境
-
-```bash
-docker compose -f docker-compose.incident.yml up -d
+```powershell
+Copy-Item .env.example .env
+Copy-Item ..\MerchantFlow-Pro\.env.example ..\MerchantFlow-Pro\.env
 ```
 
-Windows 可直接使用：
+至少填写：
+
+- AIOps：`POSTGRES_PASSWORD`、`JWT_SECRET`、`ADMIN_PASSWORD`、`ALERTMANAGER_WEBHOOK_SECRET`、`GRAFANA_ADMIN_PASSWORD`。
+- MerchantFlow：`MYSQL_PASSWORD`、`REDIS_PASSWORD`、`AKSK_ACCESS_KEY`、`AKSK_SECRET_KEY`。
+- LLM Key 可暂不填写；服务、告警、页面、数据库和确定性诊断仍能启动，只有聊天与 Embedding 返回清晰的未配置提示。
+
+### 3. 一键启动
+
+Windows：
 
 ```powershell
 .\start-windows.bat
 ```
 
-### 4. 访问服务
+或分别启动：
 
-- Web 页面: `http://localhost:9900`
-- API 文档: `http://localhost:9900/docs`
-
-## 常用接口
-
-| 功能 | 方法 | 路径 |
-|------|------|------|
-| 普通对话 | POST | `/api/chat` |
-| 流式对话 | POST | `/api/chat_stream` |
-| AIOps 诊断 | POST | `/api/aiops` |
-| 告警接入 | POST | `/api/alerts/webhook` |
-| incident 列表 | GET | `/api/incidents` |
-| incident 详情 | GET | `/api/incidents/{incident_id}` |
-| 模型切换 | POST | `/api/model/switch` |
-| 修复执行 | POST | `/api/aiops/remediation/execute` |
-| 文件上传 | POST | `/api/upload` |
-
-## MCP 工具
-
-### mcp-monitor
-
-- `query_metric_range`
-- `query_cpu_metrics`
-- `query_memory_metrics`
-- `get_service_health`
-
-### mcp-log
-
-- `query_service_logs`
-- `find_error_patterns`
-- `search_log`
-
-### mcp-remediation
-
-- `propose_remediation`
-- `execute_approved_remediation`
-
-## 本地开发
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 9900 --reload
+```powershell
+docker compose -f docker-compose.incident.yml up -d --build
+Set-Location ..\MerchantFlow-Pro
+docker compose up -d --build
 ```
 
-## 测试
+AIOps 必须先启动一次以创建共享网络 `aiops-observe`。
 
-```bash
-pytest
+### 4. 访问
+
+| 服务 | 地址 |
+|---|---|
+| Incident 工作台 | `http://localhost:9900` |
+| OpenAPI | `http://localhost:9900/docs` |
+| Grafana | `http://localhost:3000` |
+| Prometheus | `http://localhost:9090` |
+| Alertmanager | `http://localhost:9093` |
+| MerchantFlow | `http://localhost:8080` |
+| MerchantFlow 指标 | `http://localhost:8081/actuator/prometheus` |
+
+## 真实故障演练
+
+先在 AIOps `.env` 中设置：
+
+```dotenv
+LAB_MODE=true
+ALLOW_MUTATIONS=true
 ```
 
-## 项目亮点
+然后使用 MerchantFlow lab overlay：
 
-- 告警进入系统后不直接给结论，而是先收集指标、日志和知识库证据。
-- 通过 Planner / Executor / Replanner 拆分诊断职责，增强可解释性。
-- 通过 MCP 把 Prometheus、Loki、修复动作统一成工具层，便于扩展。
-- 通过 Docker Compose 做服务隔离和配置解耦，方便本地开发和 GitHub 展示。
+```powershell
+Set-Location ..\MerchantFlow-Pro
+docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile lab up -d --build toxiproxy proxy-init backend
+```
+
+CPU 饱和（真实 HTTP 并发 + 0.25 CPU 配额）：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile lab run --rm -e K6_VUS=80 -e K6_DURATION=3m k6
+```
+
+Redis 真实网络延迟：
+
+```powershell
+powershell -File lab\scenarios.ps1 redis-latency -LatencyMs 1500
+```
+
+Redis 真实连接中断与恢复：
+
+```powershell
+powershell -File lab\scenarios.ps1 redis-cut
+powershell -File lab\scenarios.ps1 restore
+```
+
+这些操作改变真实 TCP 链路；MerchantFlow 自然产生 Micrometer 指标、JSON 错误日志和 OpenTelemetry Span。不要在非隔离环境启用 lab 双开关。
+
+## API 主路径
+
+| 方法 | 路径 | 最低权限 |
+|---|---|---|
+| POST | `/api/v1/auth/login` | 公开 |
+| POST | `/api/v1/alerts/alertmanager` | Webhook Secret/HMAC |
+| GET | `/api/v1/incidents` | viewer |
+| GET | `/api/v1/incidents/{id}` | viewer |
+| POST | `/api/v1/incidents/{id}/diagnoses` | operator |
+| GET | `/api/v1/diagnoses/{run_id}` | viewer |
+| GET | `/api/v1/diagnoses/{run_id}/events` | viewer |
+| POST | `/api/v1/runbooks` | admin |
+| POST | `/api/v1/chat` | viewer |
+| POST | `/api/v1/remediation-proposals/{id}/approve` | operator/admin + lab |
+
+## 测试、质量与评测
+
+```powershell
+uv sync --extra dev
+uv run ruff check app mcp_servers scripts tests
+uv run mypy app --no-incremental
+uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=75
+docker compose -f docker-compose.incident.yml --env-file .env.example config --quiet
+```
+
+计算真实在线结果：
+
+```powershell
+Copy-Item evaluation\results.example.json evaluation\results.json
+uv run python scripts\evaluate_results.py
+```
+
+`evaluation/cases.json` 定义 3 类 15 个案例，每例执行 3 次。Top-1、证据召回率、P50/P95 调查时间和危险工具误调用数全部由结果文件计算；不要在简历中填写尚未真实测得的目标值。
+
+## 安全边界
+
+- Diagnosis Graph 只注册 `READ_ONLY` 工具，任何 mutation tool 在注册策略层直接拒绝。
+- Prometheus/LogQL/Tempo 查询带固定时间范围和结果上限。
+- API 不接收大模型生成的 Shell 命令。
+- MerchantFlow 的 `allow_mutations` 默认且正常环境始终为 `false`。
+- 沙箱恢复仅包含 `remove_redis_latency` 和 `restore_redis_connection` 两个固定动作。
+- 所有审批、执行和健康验证写入审计表。

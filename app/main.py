@@ -1,98 +1,80 @@
-"""FastAPI 应用入口
+"""FastAPI control-plane entry point."""
 
-主应用程序，配置路由、中间件、静态文件等
-"""
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from contextlib import asynccontextmanager
-import os
+from fastapi.staticfiles import StaticFiles
+from prometheus_client import make_asgi_app
+from sqlalchemy import text
 
+from app.api.v1 import alerts, auth, chat, incidents, models, remediation, runbooks, services
 from app.config import config
-from loguru import logger
-from app.api import alerts, aiops, chat, demo, file, health, model
-from app.core.milvus_client import milvus_manager
+from app.db import AsyncSessionFactory, close_database, init_database
+from app.services.bootstrap_service import bootstrap_database
 
 
-@asynccontextmanager#装饰器
-async def lifespan(app: FastAPI):#async表示异步 “这个函数可能会等外部事情，等的时候不堵住整个程序”
-    """应用生命周期管理"""
-    # 启动时执行
-    logger.info("=" * 60)
-    logger.info(f"🚀 {config.app_name} v{config.app_version} 启动中...")
-    logger.info(f"📝 环境: {'开发' if config.debug else '生产'}")
-    logger.info(f"🌐 监听地址: http://{config.host}:{config.port}")
-    logger.info(f"📚 API 文档: http://{config.host}:{config.port}/docs")
-    
-    # 连接 Milvus
-    logger.info("🔌 正在连接 Milvus...")
-    milvus_manager.connect()
-    logger.info("✅ Milvus 连接成功")
-    
-    logger.info("=" * 60)
-    
-    yield #启动服务 → 执行 lifespan 中 yield 之前的代码 → 服务运行 → 关闭服务 → 执行 yield 之后的代码
-    
-    # 关闭时执行
-    logger.info("🔌 正在关闭 Milvus 连接...")
-    milvus_manager.close()
-    logger.info(f"👋 {config.app_name} 关闭")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await init_database()
+    await bootstrap_database()
+    yield
+    await close_database()
 
 
-# 创建 FastAPI 应用
 app = FastAPI(
     title=config.app_name,
     version=config.app_version,
-    description="基于 LangChain 的智能oncall运维系统",
-    lifespan=lifespan
+    description="Evidence-driven incident investigation for containerized services",
+    lifespan=lifespan,
 )
-
-# 配置 CORS#Cross-Origin Resource Sharing（跨域资源共享）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该限制具体域名
+    allow_origins=config.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],# 允许哪些 HTTP 方法
-    allow_headers=["*"],# 允许哪些请求头
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Last-Event-ID", "X-Idempotency-Key"],
 )
 
-# 注册路由
-#给那四个api路由呢
-app.include_router(health.router, tags=["健康检查"])
-app.include_router(chat.router, prefix="/api", tags=["对话"])
-#chat.router 中的 /chat 路由 → 实际访问路径 /api/chat。有个前缀/api
-app.include_router(file.router, prefix="/api", tags=["文件管理"])
-app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
-app.include_router(alerts.router, prefix="/api", tags=["告警与事故"])#接收 Alertmanager 告警
-app.include_router(demo.router, prefix="/api", tags=["Demo故障注入"])
-app.include_router(model.router, prefix="/api", tags=["模型配置"])
+api_prefix = "/api/v1"
+app.include_router(auth.router, prefix=api_prefix)
+app.include_router(alerts.router, prefix=api_prefix)
+app.include_router(incidents.router, prefix=api_prefix)
+app.include_router(incidents.diagnoses_router, prefix=api_prefix)
+app.include_router(services.router, prefix=api_prefix)
+app.include_router(runbooks.router, prefix=api_prefix)
+app.include_router(remediation.router, prefix=api_prefix)
+app.include_router(chat.router, prefix=api_prefix)
+app.include_router(models.router, prefix=api_prefix)
 
-# 挂载静态文件
-static_dir = "static"#把前端静态文件挂载在static目录下，访问路径为/static
+app.mount("/internal/metrics", make_asgi_app())
+
+static_dir = Path(__file__).resolve().parents[1] / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-@app.get("/")
-async def root():
-    """返回首页"""
-    index_path = os.path.join(static_dir, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {
-        "message": f"Welcome to {config.app_name} API",
-        "version": config.app_version,
-        "docs": "/docs"
-    }
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "UP", "service": config.app_name, "version": config.app_version}
+
+
+@app.get("/ready")
+async def ready() -> dict[str, str]:
+    async with AsyncSessionFactory() as session:
+        await session.execute(text("SELECT 1"))
+    return {"status": "UP", "database": "UP"}
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> FileResponse:
+    return FileResponse(static_dir / "index.html")
 
 
 if __name__ == "__main__":
     import uvicorn
-    
-    uvicorn.run(  #uvicorn.run() 是启动 FastAPI 服务的命令
-        "app.main:app",# 应用模块路径，指定了应用实例的位置
-        host=config.host,# 监听地址
-        port=config.port,# 监听端口
-        reload=config.debug,# 开发模式自动重载
-        log_level="info"  # 日志级别
-    )
+
+    uvicorn.run("app.main:app", host=config.host, port=config.port, reload=config.debug)

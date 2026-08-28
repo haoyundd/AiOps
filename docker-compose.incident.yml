@@ -1,209 +1,215 @@
+name: aiops-incident-agent
+
+x-app-environment: &app-environment
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  DATABASE_URL: postgresql+asyncpg://aiops:${POSTGRES_PASSWORD}@postgres:5432/aiops
+  DATABASE_AUTO_CREATE: "false"
+  JWT_SECRET: ${JWT_SECRET}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+  ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:9900}
+  PROMETHEUS_URL: http://prometheus:9090
+  LOKI_URL: http://loki:3100
+  TEMPO_URL: http://tempo:3200
+  MERCHANTFLOW_HEALTH_URL: http://merchantflow:8081/actuator/health
+  MCP_OPS_URL: http://mcp-ops:8004/mcp
+  DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+  DASHSCOPE_API_BASE: ${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+  DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-max}
+  LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
+  LLM_MODEL: ${LLM_MODEL:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LAB_MODE: ${LAB_MODE:-false}
+  ALLOW_MUTATIONS: ${ALLOW_MUTATIONS:-false}
+
 services:
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.18
-    container_name: incident-etcd
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: aiops-postgres
     environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+      POSTGRES_DB: aiops
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - incident_etcd:/etcd
-
-  minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    container_name: incident-minio
-    environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-    command: minio server /minio_data --console-address ":9001"
-    volumes:
-      - incident_minio:/minio_data
+      - aiops_postgres:/var/lib/postgresql/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${AIOPS_POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops -d aiops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [aiops-observe]
 
-  milvus:
-    image: milvusdb/milvus:v2.5.10
-    container_name: incident-milvus
-    command: ["milvus", "run", "standalone"]
-    security_opt:
-      - seccomp:unconfined
-    environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-    volumes:
-      - incident_milvus:/var/lib/milvus
-    ports:
-      - "19530:19530"
-      - "9091:9091"
+  migrate:
+    build: .
+    container_name: aiops-migrate
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    environment: *app-environment
     depends_on:
-      - etcd
-      - minio
-
-  attu:
-    image: zilliz/attu:v2.5
-    container_name: incident-attu
-    environment:
-      MILVUS_URL: milvus:19530
-    ports:
-      - "8000:3000"
-    depends_on:
-      - milvus
-
-  loki:
-    image: grafana/loki:3.2.1
-    container_name: incident-loki
-    command: ["-config.file=/etc/loki/loki.yml"]
-    volumes:
-      - ./observability/loki.yml:/etc/loki/loki.yml:ro
-      - incident_loki:/loki
-    ports:
-      - "3100:3100"
-
-  promtail:
-    image: grafana/promtail:3.2.1
-    container_name: incident-promtail
-    command: ["-config.file=/etc/promtail/promtail.yml"]
-    volumes:
-      - ./observability/promtail.yml:/etc/promtail/promtail.yml:ro
-      - demo_logs:/app/logs:ro
-    depends_on:
-      - loki
-      - demo-service
-
-  prometheus:
-    image: prom/prometheus:v2.55.1
-    container_name: incident-prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=24h"
-    volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
-      - incident_prometheus:/prometheus
-    ports:
-      - "9090:9090"
-    depends_on:
-      - demo-service
-      - alertmanager
-
-  alertmanager:
-    image: prom/alertmanager:v0.27.0
-    container_name: incident-alertmanager
-    command:
-      - "--config.file=/etc/alertmanager/alertmanager.yml"
-      - "--storage.path=/alertmanager"
-    volumes:
-      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - incident_alertmanager:/alertmanager
-    ports:
-      - "9093:9093"
-
-  grafana:
-    image: grafana/grafana:11.3.0
-    container_name: incident-grafana
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
-      - loki
-
-  demo-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: incident-demo-service
-    command: ["python", "-m", "uvicorn", "demo_service.app:app", "--host", "0.0.0.0", "--port", "9910"]
-    volumes:
-      - demo_logs:/app/logs
-    ports:
-      - "9910:9910"
-
-  mcp-log:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: incident-mcp-log
-    command: ["python", "mcp_servers/cls_server.py"]
-    environment:
-      LOKI_URL: http://loki:3100
-      DEMO_SERVICE_NAME: demo-service
-    ports:
-      - "8003:8003"
-    depends_on:
-      - loki
-
-  mcp-monitor:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: incident-mcp-monitor
-    command: ["python", "mcp_servers/monitor_server.py"]
-    environment:
-      PROMETHEUS_URL: http://prometheus:9090
-      DEMO_SERVICE_NAME: demo-service
-    ports:
-      - "8004:8004"
-    depends_on:
-      - prometheus
-
-  mcp-remediation:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: incident-mcp-remediation
-    command: ["python", "mcp_servers/remediation_server.py"]
-    environment:
-      DEMO_SERVICE_URL: http://demo-service:9910
-    ports:
-      - "8005:8005"
-    depends_on:
-      - demo-service
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [aiops-observe]
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: incident-api
-    environment:
-      MILVUS_HOST: milvus
-      MILVUS_PORT: 19530
-      PROMETHEUS_URL: http://prometheus:9090
-      LOKI_URL: http://loki:3100
-      DEMO_SERVICE_URL: http://demo-service:9910
-      MCP_CLS_URL: http://mcp-log:8003/mcp
-      MCP_MONITOR_URL: http://mcp-monitor:8004/mcp
-      MCP_REMEDIATION_URL: http://mcp-remediation:8005/mcp
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-your-api-key-here}
-      DASHSCOPE_API_BASE: ${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-max}
-      RAG_MODEL: ${RAG_MODEL:-qwen-max}
-      LLM_PROVIDER: ${LLM_PROVIDER:-xiaomi}
-      LLM_MODEL: ${LLM_MODEL:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      XIAOMI_API_KEY: ${XIAOMI_API_KEY:-}
-      XIAOMI_API_BASE: ${XIAOMI_API_BASE:-https://api.xiaomimimo.com/v1}
-      XIAOMI_MODEL: ${XIAOMI_MODEL:-mimo-v2-flash}
-      AIOPS_AUTO_DIAGNOSIS_ENABLED: ${AIOPS_AUTO_DIAGNOSIS_ENABLED:-true}
+    build: .
+    container_name: aiops-api
+    environment: *app-environment
     ports:
       - "9900:9900"
     depends_on:
-      - milvus
-      - mcp-log
-      - mcp-monitor
-      - mcp-remediation
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9900/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [aiops-observe]
+
+  worker:
+    build: .
+    container_name: aiops-worker
+    command: ["uv", "run", "python", "-m", "app.worker"]
+    environment: *app-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks: [aiops-observe]
+
+  mcp-ops:
+    build: .
+    container_name: aiops-mcp-ops
+    command: ["uv", "run", "python", "mcp_servers/ops_server.py"]
+    environment: *app-environment
+    ports:
+      - "8004:8004"
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+    networks: [aiops-observe]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: aiops-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - aiops_prometheus:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      alertmanager:
+        condition: service_started
+    networks: [aiops-observe]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: aiops-alertmanager
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        sed "s|__ALERTMANAGER_WEBHOOK_SECRET__|$${ALERTMANAGER_WEBHOOK_SECRET}|g"
+        /etc/alertmanager/alertmanager.template.yml > /tmp/alertmanager.yml
+        && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager
+    environment:
+      ALERTMANAGER_WEBHOOK_SECRET: ${ALERTMANAGER_WEBHOOK_SECRET}
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.template.yml:ro
+      - aiops_alertmanager:/alertmanager
+    ports:
+      - "9093:9093"
+    networks: [aiops-observe]
+
+  loki:
+    image: grafana/loki:3.5.3
+    container_name: aiops-loki
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./observability/loki.yml:/etc/loki/loki.yml:ro
+      - aiops_loki:/loki
+    ports:
+      - "3100:3100"
+    networks: [aiops-observe]
+
+  tempo:
+    image: grafana/tempo:2.8.2
+    container_name: aiops-tempo
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./observability/tempo.yml:/etc/tempo/tempo.yml:ro
+      - aiops_tempo:/var/tempo
+    ports:
+      - "3200:3200"
+    networks: [aiops-observe]
+
+  alloy:
+    image: grafana/alloy:v1.10.0
+    container_name: aiops-alloy
+    command: ["run", "/etc/alloy/config.alloy", "--server.http.listen-addr=0.0.0.0:12345"]
+    volumes:
+      - ./observability/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "12345:12345"
+    depends_on:
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+    networks: [aiops-observe]
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.27.0
+    container_name: aiops-blackbox
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./observability/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [aiops-observe]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    container_name: aiops-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - aiops_grafana:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+    networks: [aiops-observe]
+
+networks:
+  aiops-observe:
+    name: aiops-observe
 
 volumes:
-  incident_etcd:
-  incident_minio:
-  incident_milvus:
-  incident_loki:
-  incident_prometheus:
-  incident_alertmanager:
-  demo_logs:
+  aiops_postgres:
+  aiops_prometheus:
+  aiops_alertmanager:
+  aiops_loki:
+  aiops_tempo:
+  aiops_grafana:
