@@ -41,10 +41,13 @@ def _float_or_none(value: Any) -> float | None:
 
 def build_alert_fingerprint(alert: dict[str, Any]) -> str:
     supplied = alert.get("fingerprint")
-    if supplied:
+    # Alertmanager 的 fingerprint 通常标识规则和标签，不一定区分恢复后的下一轮 firing。
+    # 下一步：把 startsAt 纳入内部去重键，同一轮仍幂等，不同轮次创建新的 Incident。
+    if supplied and not alert.get("startsAt"):
         return str(supplied)
     labels = alert.get("labels") or {}
     stable = {
+        "supplied_fingerprint": supplied,
         "alertname": labels.get("alertname"),
         "service": labels.get("service") or labels.get("job"),
         "environment": labels.get("environment", "local"),
@@ -262,11 +265,15 @@ class IncidentRepository:
         evidence: list[dict[str, Any]],
         hypotheses: list[dict[str, Any]],
         tool_calls: list[dict[str, Any]],
+        total_steps: int | None = None,
+        total_tool_calls: int | None = None,
         error: str = "",
     ) -> None:
         run.status = status
         run.conclusion = conclusion
         run.error = error
+        run.total_steps = total_steps
+        run.total_tool_calls = total_tool_calls
         run.finished_at = utcnow()
 
         evidence_records: list[EvidenceItem] = []
@@ -319,6 +326,7 @@ def incident_to_dict(incident: Incident) -> dict[str, Any]:
         "status": incident.status,
         "version": incident.version,
         "raw_alert": incident.raw_alert,
+        "started_at": incident.started_at,
         "created_at": incident.created_at,
         "updated_at": incident.updated_at,
         "resolved_at": incident.resolved_at,
@@ -343,6 +351,10 @@ def diagnosis_to_dict(run: DiagnosisRun) -> dict[str, Any]:
         "status": run.status,
         "trigger": run.trigger,
         "requested_by": run.requested_by,
+        "provider": run.provider,
+        "model": run.model,
+        "total_steps": run.total_steps,
+        "total_tool_calls": run.total_tool_calls,
         "conclusion": run.conclusion,
         "error": run.error,
         "created_at": run.created_at,

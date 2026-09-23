@@ -57,8 +57,13 @@ class Settings(BaseSettings):
     loki_url: str = "http://localhost:3100"
     tempo_url: str = "http://localhost:3200"
     merchantflow_health_url: str = "http://localhost:8081/actuator/health"
+    merchantflow_ops_url: str = "http://localhost:8081"
+    aksk_access_key: str = ""
+    aksk_secret_key: str = ""
     observability_timeout_seconds: float = 8.0
     max_query_range_minutes: int = 120
+    # 告警进入 firing 通常晚于首条异常日志；只允许有限回溯，避免把历史故障混入本轮诊断。
+    diagnosis_pre_alert_lookback_seconds: int = Field(default=120, ge=0, le=300)
     max_query_results: int = 200
 
     lab_mode: bool = False
@@ -66,6 +71,8 @@ class Settings(BaseSettings):
     toxiproxy_url: str = "http://localhost:8474"
     mcp_ops_transport: str = "streamable-http"
     mcp_ops_url: str = "http://localhost:8004/mcp"
+    # Docker 环境必须经过 MCP 读取观测证据；单元测试可显式关闭以使用 Fake Registry。
+    mcp_ops_enabled: bool = True
 
     @field_validator("cors_origins", mode="before")
     @classmethod

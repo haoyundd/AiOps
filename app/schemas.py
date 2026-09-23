@@ -7,7 +7,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.domain import DiagnosisStatus, IncidentStatus, ProposalStatus, RiskLevel, Role
+from app.domain import (
+    DiagnosisStatus,
+    IncidentStatus,
+    ProposalStatus,
+    RiskLevel,
+    Role,
+    RunbookDraftStatus,
+)
 
 
 class LoginRequest(BaseModel):
@@ -68,6 +75,10 @@ class DiagnosisRunRead(BaseModel):
     status: DiagnosisStatus
     trigger: str
     requested_by: str
+    provider: str | None
+    model: str | None
+    total_steps: int | None
+    total_tool_calls: int | None
     conclusion: dict[str, Any]
     error: str
     created_at: datetime
@@ -89,6 +100,7 @@ class IncidentRead(BaseModel):
     status: IncidentStatus
     version: int
     raw_alert: dict[str, Any]
+    started_at: datetime | None
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
@@ -164,6 +176,31 @@ class RunbookCreate(BaseModel):
     content: str = Field(min_length=20)
 
 
+class RunbookDraftRead(BaseModel):
+    """待审核知识草稿的 API 返回格式。"""
+
+    id: str
+    incident_id: str
+    diagnosis_run_id: str
+    title: str
+    service_name: str
+    tags: list[str]
+    content: str
+    checksum: str
+    status: RunbookDraftStatus
+    created_by: str
+    reviewed_by: str
+    review_reason: str
+    created_at: datetime
+    reviewed_at: datetime | None
+
+
+class RunbookDraftDecision(BaseModel):
+    """管理员审核草稿时填写的理由。"""
+
+    reason: str = Field(default="", max_length=1000)
+
+
 class RemediationDecision(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
@@ -171,6 +208,7 @@ class RemediationDecision(BaseModel):
 class RemediationProposalRead(BaseModel):
     id: str
     incident_id: str
+    diagnosis_run_id: str | None
     action_id: str
     parameters: dict[str, Any]
     reason: str

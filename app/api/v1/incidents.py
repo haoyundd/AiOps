@@ -145,6 +145,7 @@ async def get_diagnosis(
             "id": item.id,
             "tool_name": item.tool_name,
             "source": item.source,
+            "transport": item.transport,
             "risk_level": item.risk_level.value,
             "status": item.status,
             "input": item.input,

@@ -14,6 +14,8 @@ x-app-environment: &app-environment
   TEMPO_URL: http://tempo:3200
   MERCHANTFLOW_HEALTH_URL: http://merchantflow:8081/actuator/health
   MCP_OPS_URL: http://mcp-ops:8004/mcp
+  # 下一步：Worker 会使用这个开关强制通过 mcp-ops 读取观测证据。
+  MCP_OPS_ENABLED: "true"
   DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
   DASHSCOPE_API_BASE: ${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
   DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-max}
@@ -85,7 +87,11 @@ services:
     build: .
     container_name: aiops-mcp-ops
     command: ["uv", "run", "python", "mcp_servers/ops_server.py"]
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      MERCHANTFLOW_OPS_URL: http://merchantflow:8081
+      AKSK_ACCESS_KEY: ${AKSK_ACCESS_KEY}
+      AKSK_SECRET_KEY: ${AKSK_SECRET_KEY}
     ports:
       - "8004:8004"
     depends_on:

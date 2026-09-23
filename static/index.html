@@ -119,6 +119,25 @@
             <p class="form-error" id="runbookError"></p>
             <button class="primary-button" type="submit">写入 Runbook</button>
           </form>
+          <section class="detail-section" id="draftPanel">
+            <div class="panel-head"><div><span class="section-code">D</span><h2>诊断复盘草稿</h2></div><button class="icon-button" id="refreshDrafts" type="button" title="刷新草稿">↻</button></div>
+            <div class="filters" id="draftFilters" aria-label="草稿审核状态">
+              <button class="is-active" data-draft-status="PENDING">待审核</button>
+              <button data-draft-status="APPROVED">已批准</button>
+              <button data-draft-status="REJECTED">已驳回</button>
+            </div>
+            <p class="muted">只有证据充分的诊断会进入这里；批准后才会成为正式手册，驳回内容不会进入知识检索。</p>
+            <div id="draftList" class="incident-list"><div class="empty-state">暂无待审核草稿</div></div>
+          </section>
+          <section class="detail-section" id="formalRunbookPanel">
+            <div class="panel-head"><div><span class="section-code">E</span><h2>正式手册检索</h2></div></div>
+            <form class="runbook-search" id="runbookSearchForm">
+              <label>关键词<input id="runbookSearchQuery" placeholder="例如：Redis 延迟、MySQL 故障" maxlength="500"></label>
+              <button class="primary-button" type="submit">检索已批准知识</button>
+            </form>
+            <p class="form-error" id="runbookSearchError" role="alert"></p>
+            <div id="runbookSearchResults" class="incident-list"><div class="empty-state">输入关键词后检索正式手册。</div></div>
+          </section>
         </div>
       </section>
     </main>

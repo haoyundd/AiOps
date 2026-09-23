@@ -52,6 +52,14 @@ class ProposalStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class RunbookDraftStatus(StrEnum):
+    """诊断复盘草稿的审核状态。"""
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 INCIDENT_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
     IncidentStatus.RECEIVED: {
         IncidentStatus.DIAGNOSING,

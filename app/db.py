@@ -40,6 +40,7 @@ from app.domain import (
     ProposalStatus,
     RiskLevel,
     Role,
+    RunbookDraftStatus,
 )
 
 
@@ -164,6 +165,12 @@ class DiagnosisRun(Base):
     idempotency_key: Mapped[str] = mapped_column(String(160))
     requested_by: Mapped[str] = mapped_column(String(120), default="system")
     worker_id: Mapped[str] = mapped_column(String(120), default="")
+    # 记录实际运行时配置；配置缺失时允许为空，禁止伪造模型信息。
+    provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # 只有 Worker 能可靠统计时才写入执行数量，否则保留 NULL。
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
     conclusion: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -232,6 +239,9 @@ class ToolCallRecord(Base):
         enum_column(RiskLevel), default=RiskLevel.READ_ONLY
     )
     status: Mapped[str] = mapped_column(String(30))
+    # 记录工具是本地测试 Registry 还是生产 MCP 通道，便于审计真实执行路径。
+    # 下一步：诊断详情接口把 transport 返回给前端，演示时可以证明 Agent 未绕过 MCP。
+    transport: Mapped[str] = mapped_column(String(20), default="local")
     input: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     output: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(Text, default="")
@@ -269,12 +279,44 @@ class RunbookChunk(Base):
     )
 
 
+class RunbookDraft(Base):
+    """由高置信度诊断生成、等待管理员审核的知识草稿。"""
+
+    __tablename__ = "runbook_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    incident_id: Mapped[str] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), index=True
+    )
+    diagnosis_run_id: Mapped[str] = mapped_column(
+        ForeignKey("diagnosis_runs.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), index=True)
+    service_name: Mapped[str] = mapped_column(String(120), index=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    content: Mapped[str] = mapped_column(Text)
+    checksum: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[RunbookDraftStatus] = mapped_column(
+        enum_column(RunbookDraftStatus), default=RunbookDraftStatus.PENDING, index=True
+    )
+    created_by: Mapped[str] = mapped_column(String(120), default="agent")
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    review_reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RemediationProposal(Base):
     __tablename__ = "remediation_proposals"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     incident_id: Mapped[str] = mapped_column(
         ForeignKey("incidents.id", ondelete="CASCADE"), index=True
+    )
+    # 绑定产生修复建议的诊断运行，便于审计“哪一次证据分析触发了动作”。
+    # 该字段允许为空以兼容历史提案；新提案由 Worker 必须写入 run_id。
+    diagnosis_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("diagnosis_runs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     action_id: Mapped[str] = mapped_column(String(120))
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

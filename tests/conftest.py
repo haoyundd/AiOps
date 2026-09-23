@@ -21,7 +21,13 @@ os.environ.update(
         "JWT_SECRET": "test-jwt-secret-long-enough-for-tests",
         "ALERTMANAGER_WEBHOOK_SECRET": "test-alert-secret",
         "AIOPS_AUTO_DIAGNOSIS_ENABLED": "false",
+        "LLM_PROVIDER": "dashscope",
+        "LLM_MODEL": "",
+        "LLM_BASE_URL": "",
+        "LLM_API_KEY": "",
         "DASHSCOPE_API_KEY": "",
+        "XIAOMI_API_KEY": "",
+        "MCP_OPS_ENABLED": "false",
     }
 )
 

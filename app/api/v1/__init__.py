@@ -1,6 +1,16 @@
 """AIOps API v1 routers."""
 
-from app.api.v1 import alerts, auth, chat, incidents, models, remediation, runbooks, services
+from app.api.v1 import (
+    alerts,
+    auth,
+    chat,
+    incidents,
+    models,
+    remediation,
+    runbook_drafts,
+    runbooks,
+    services,
+)
 
 __all__ = [
     "alerts",
@@ -9,6 +19,7 @@ __all__ = [
     "incidents",
     "models",
     "remediation",
+    "runbook_drafts",
     "runbooks",
     "services",
 ]

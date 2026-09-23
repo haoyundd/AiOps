@@ -68,6 +68,22 @@ class RemediationService:
             ensure_incident_transition(incident.status, IncidentStatus.REMEDIATING)
             incident.status = IncidentStatus.REMEDIATING
             proposal.status = ProposalStatus.EXECUTING
+            # 审计“开始执行”和最终结果分开记录，避免只看到成功/失败而无法证明动作何时真正启动。
+            # 下一步：动作完成后进入真实健康验证，再写入 verified 或 failed 审计。
+            session.add(
+                AuditEvent(
+                    actor=actor,
+                    action="remediation.execute",
+                    resource_type="remediation_proposal",
+                    resource_id=proposal.id,
+                    outcome="started",
+                    detail={
+                        "incident_id": incident.id,
+                        "diagnosis_run_id": proposal.diagnosis_run_id,
+                        "action_id": proposal.action_id,
+                    },
+                )
+            )
             await incident_repository.append_event(
                 session,
                 incident.id,
@@ -130,6 +146,20 @@ class RemediationService:
                 incident = await session.get(Incident, proposal.incident_id, with_for_update=True)
                 proposal.status = ProposalStatus.FAILED
                 proposal.result = {"error": str(exc)}
+                session.add(
+                    AuditEvent(
+                        actor=actor,
+                        action="remediation.execute",
+                        resource_type="remediation_proposal",
+                        resource_id=proposal.id,
+                        outcome="failed",
+                        detail={
+                            "incident_id": proposal.incident_id,
+                            "diagnosis_run_id": proposal.diagnosis_run_id,
+                            "error": str(exc),
+                        },
+                    )
+                )
                 if incident is not None:
                     incident.status = IncidentStatus.FAILED
                     await incident_repository.append_event(

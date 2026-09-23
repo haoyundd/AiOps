@@ -12,7 +12,17 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import make_asgi_app
 from sqlalchemy import text
 
-from app.api.v1 import alerts, auth, chat, incidents, models, remediation, runbooks, services
+from app.api.v1 import (
+    alerts,
+    auth,
+    chat,
+    incidents,
+    models,
+    remediation,
+    runbook_drafts,
+    runbooks,
+    services,
+)
 from app.config import config
 from app.db import AsyncSessionFactory, close_database, init_database
 from app.services.bootstrap_service import bootstrap_database
@@ -47,6 +57,7 @@ app.include_router(incidents.router, prefix=api_prefix)
 app.include_router(incidents.diagnoses_router, prefix=api_prefix)
 app.include_router(services.router, prefix=api_prefix)
 app.include_router(runbooks.router, prefix=api_prefix)
+app.include_router(runbook_drafts.router, prefix=api_prefix)
 app.include_router(remediation.router, prefix=api_prefix)
 app.include_router(chat.router, prefix=api_prefix)
 app.include_router(models.router, prefix=api_prefix)

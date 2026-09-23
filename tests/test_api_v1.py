@@ -2,6 +2,11 @@ import hashlib
 import hmac
 import json
 
+from app.db import DiagnosisRun, RunbookDraft, session_scope
+from app.domain import RunbookDraftStatus
+from app.services.incident_repository import incident_repository
+from app.services.runbook_draft_service import runbook_draft_service
+
 
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
@@ -96,6 +101,40 @@ async def test_admin_can_read_services_model_and_create_runbook(client, admin_to
     assert model.json()["provider"] == "dashscope"
     assert runbook.status_code == 201
 
+    # 查询接口与创建接口一起验收，确保前端“手册”页面可以读取正式知识。
+    searched = client.get(
+        "/api/v1/runbooks?service_name=merchantflow&query=CPU",
+        headers=headers,
+    )
+    assert searched.status_code == 200
+    assert any(item["title"] == "MerchantFlow CPU runbook" for item in searched.json())
+
+
+async def test_resolved_alert_then_new_firing_creates_a_new_incident(client):
+    """同一告警恢复后再次触发，必须开启新的 Incident 周期。"""
+    base_alert = {
+        "fingerprint": "api-alert-cycle-case",
+        "labels": {
+            "alertname": "MerchantFlowRedisOutage",
+            "service": "merchantflow",
+            "environment": "test",
+        },
+    }
+    headers = {"Authorization": "Bearer test-alert-secret"}
+
+    first = {"alerts": [{**base_alert, "status": "firing", "startsAt": "2026-08-24T10:00:00Z"}]}
+    first_response = client.post("/api/v1/alerts/alertmanager", json=first, headers=headers)
+    first_id = first_response.json()["accepted"][0]["incident_id"]
+
+    resolved = {"alerts": [{**base_alert, "status": "resolved", "startsAt": "2026-08-24T10:00:00Z"}]}
+    resolved_response = client.post("/api/v1/alerts/alertmanager", json=resolved, headers=headers)
+    assert resolved_response.json()["accepted"][0]["incident_id"] == first_id
+
+    second = {"alerts": [{**base_alert, "status": "firing", "startsAt": "2026-08-24T11:00:00Z"}]}
+    second_response = client.post("/api/v1/alerts/alertmanager", json=second, headers=headers)
+    assert second_response.json()["accepted"][0]["created"] is True
+    assert second_response.json()["accepted"][0]["incident_id"] != first_id
+
 
 async def test_admin_can_queue_manual_diagnosis(client, admin_token):
     payload = {
@@ -126,3 +165,125 @@ async def test_admin_can_queue_manual_diagnosis(client, admin_token):
     run = client.get(f"/api/v1/diagnoses/{queued.json()['id']}", headers=auth(admin_token))
     assert run.status_code == 200
     assert run.json()["status"] == "QUEUED"
+
+
+async def test_admin_can_approve_diagnosis_runbook_draft(client, admin_token):
+    alert = client.post(
+        "/api/v1/alerts/alertmanager",
+        json={
+            "alerts": [
+                {
+                    "status": "firing",
+                    "fingerprint": "draft-api-case",
+                    "labels": {
+                        "alertname": "MerchantFlowRedisLatency",
+                        "service": "merchantflow",
+                        "environment": "test",
+                    },
+                }
+            ]
+        },
+        headers={"Authorization": "Bearer test-alert-secret"},
+    )
+    incident_id = alert.json()["accepted"][0]["incident_id"]
+    async with session_scope() as session:
+        incident = await incident_repository.get_incident(session, incident_id, with_details=False)
+        assert incident is not None
+        run = DiagnosisRun(incident_id=incident.id, idempotency_key="draft-api-run")
+        session.add(run)
+        await session.flush()
+        draft = await runbook_draft_service.create_from_diagnosis(
+            session,
+            incident,
+            run,
+            {
+                "status": "DIAGNOSED",
+                "category": "REDIS_LATENCY",
+                "root_cause": "Redis downstream span is slow",
+                "confidence": 0.9,
+                "recommendations": ["Remove latency after approval"],
+            },
+            [
+                {
+                    "source": "prometheus",
+                    "kind": "red_metrics",
+                    "status": "SUPPORTED",
+                    "summary": "HTTP P95 is high",
+                },
+                {
+                    "source": "tempo",
+                    "kind": "trace_details",
+                    "status": "SUPPORTED",
+                    "summary": "Redis span is slow",
+                },
+            ],
+        )
+        assert draft is not None
+        draft_id = draft.id
+
+    headers = auth(admin_token)
+    listed = client.get("/api/v1/runbook-drafts?status=PENDING", headers=headers)
+    assert listed.status_code == 200
+    assert any(item["id"] == draft_id for item in listed.json())
+
+    approved = client.post(
+        f"/api/v1/runbook-drafts/{draft_id}/approve",
+        headers=headers,
+        json={"reason": "证据来源独立且可以复现"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["runbook_id"]
+
+    repeated = client.post(
+        f"/api/v1/runbook-drafts/{draft_id}/approve",
+        headers=headers,
+        json={"reason": "重复审核"},
+    )
+    assert repeated.status_code == 409
+
+
+async def test_admin_can_reject_draft_and_filter_review_status(client, admin_token):
+    """审核状态必须可持久化，前端才能区分待审、已批准和已驳回知识。"""
+    async with session_scope() as session:
+        incident, _ = await incident_repository.upsert_alert(
+            session,
+            {
+                "status": "firing",
+                "fingerprint": "draft-reject-api-case",
+                "labels": {
+                    "alertname": "MerchantFlowApplicationError",
+                    "service": "merchantflow",
+                    "environment": "test",
+                },
+            },
+        )
+        run = DiagnosisRun(incident_id=incident.id, idempotency_key="draft-reject-run")
+        session.add(run)
+        await session.flush()
+        draft = RunbookDraft(
+            incident_id=incident.id,
+            diagnosis_run_id=run.id,
+            title="MerchantFlow 应用错误复盘",
+            service_name="merchantflow",
+            tags=["application_error"],
+            content="这是一段足够长的复盘内容，用于验证草稿驳回状态可以持久化。",
+            checksum="draft-reject-checksum",
+            status=RunbookDraftStatus.PENDING,
+            created_by="agent",
+        )
+        session.add(draft)
+        await session.flush()
+        draft_id = draft.id
+
+    headers = auth(admin_token)
+    rejected = client.post(
+        f"/api/v1/runbook-drafts/{draft_id}/reject",
+        headers=headers,
+        json={"reason": "需要补充应用异常堆栈"},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "REJECTED"
+    listed = client.get("/api/v1/runbook-drafts?status=REJECTED", headers=headers)
+    assert listed.status_code == 200
+    item = next(value for value in listed.json() if value["id"] == draft_id)
+    assert item["review_reason"] == "需要补充应用异常堆栈"

@@ -40,7 +40,12 @@ async def bootstrap_database() -> None:
                 )
             )
 
-        elif service.allow_mutations != (config.lab_mode and config.allow_mutations):
+        else:
+            # 服务地址会持久化在 PostgreSQL；旧电脑曾保存 localhost，进入 Docker Worker 后
+            # localhost 会指向 Worker 自己而不是 MerchantFlow。每次启动都按当前环境校准，
+            # 但不覆盖 Prometheus/Loki/Tempo 标签等用户配置。下一步：Worker 取证时直接使用这条可达地址。
+            if service.health_url != config.merchantflow_health_url:
+                service.health_url = config.merchantflow_health_url
             service.allow_mutations = config.lab_mode and config.allow_mutations
 
         admin = await session.scalar(select(User).where(User.username == config.admin_username))

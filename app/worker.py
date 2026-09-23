@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.agent.evidence_graph import evidence_diagnosis_graph
 from app.config import config
+from app.core.llm_factory import llm_factory
 from app.db import (
     DiagnosisRun,
     Incident,
@@ -24,9 +25,11 @@ from app.db import (
 from app.domain import DiagnosisStatus, IncidentStatus, RiskLevel, ensure_incident_transition
 from app.services.bootstrap_service import bootstrap_database
 from app.services.incident_repository import incident_repository
+from app.services.runbook_draft_service import runbook_draft_service
 
 
 def _incident_payload(incident: Any) -> dict[str, Any]:
+    """把 Incident ORM 对象转换成诊断图使用的普通字典。"""
     return {
         "id": incident.id,
         "service_name": incident.service_name,
@@ -43,6 +46,7 @@ def _incident_payload(incident: Any) -> dict[str, Any]:
 
 
 def _service_payload(service: MonitoredService | None, incident: Any) -> dict[str, Any]:
+    """把被监控服务配置转换成观测工具需要的标签和健康地址。"""
     if service is None:
         return {
             "name": incident.service_name,
@@ -75,6 +79,11 @@ class DiagnosisWorker:
             if claimed is None:
                 return False
             run, incident = claimed
+            # 领取任务时保存真实运行配置，详情页不会再展示测试或历史配置。
+            runtime = llm_factory.get_runtime_config()
+            run.provider = runtime.provider or None
+            run.model = runtime.model or None
+            await session.flush()
             service = await session.scalar(
                 select(MonitoredService).where(
                     MonitoredService.name == incident.service_name,
@@ -107,16 +116,37 @@ class DiagnosisWorker:
                     evidence=result["evidence"],
                     hypotheses=result["hypotheses"],
                     tool_calls=result["tool_calls"],
+                    # 步骤数来自图运行时实际返回的节点轨迹，不再把当前节点数写死为 4。
+                    # 下一步：前端可利用 executed_steps 展示每个节点的执行过程。
+                    total_steps=len(result.get("executed_steps", [])) or None,
+                    total_tool_calls=len(result["tool_calls"]),
                 )
+                draft = await runbook_draft_service.create_from_diagnosis(
+                    session,
+                    incident,
+                    run,
+                    conclusion,
+                    result["evidence"],
+                )
+                if draft is not None:
+                    await incident_repository.append_event(
+                        session,
+                        incident.id,
+                        "runbook_draft_created",
+                        "A diagnosed incident generated a runbook draft for review",
+                        payload={"draft_id": draft.id, "checksum": draft.checksum},
+                    )
+                # 下一步：只有 LAB_MODE 与 ALLOW_MUTATIONS 同时开启时，才会把这些建议送入审批执行流。
                 action_by_category = {
-                    "DEPENDENCY_LATENCY": "remove_redis_latency",
-                    "DEPENDENCY_OUTAGE": "restore_redis_connection",
+                    "REDIS_LATENCY": "remove_redis_latency",
+                    "REDIS_OUTAGE": "restore_redis_connection",
                 }
                 action_id = action_by_category.get(str(conclusion.get("category", "")))
                 if action_id and service_payload.get("allow_mutations"):
                     key = hashlib.sha256(f"{run.id}:{action_id}".encode()).hexdigest()
                     proposal = RemediationProposal(
                         incident_id=incident.id,
+                        diagnosis_run_id=run.id,
                         action_id=action_id,
                         parameters={},
                         reason=f"Lab-only recovery proposed for {conclusion.get('root_cause')}",
@@ -150,6 +180,8 @@ class DiagnosisWorker:
                         evidence=[],
                         hypotheses=[],
                         tool_calls=[],
+                        total_steps=None,
+                        total_tool_calls=None,
                         error=str(exc),
                     )
         return True

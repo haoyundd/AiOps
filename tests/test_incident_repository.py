@@ -50,6 +50,26 @@ async def test_resolved_alert_transitions_same_incident():
         assert incident.resolved_at is not None
 
 
+async def test_new_firing_after_resolution_gets_new_incident():
+    """同一告警规则的新 firing 不能复用上一轮已恢复 Incident。"""
+    async with session_scope() as session:
+        incident, _ = await incident_repository.upsert_alert(
+            session, alert_payload("cycle-case")
+        )
+        old_id = incident.id
+        resolved = alert_payload("cycle-case")
+        resolved["status"] = "resolved"
+        await incident_repository.upsert_alert(session, resolved)
+
+    next_cycle = alert_payload("cycle-case")
+    next_cycle["startsAt"] = "2026-08-24T11:00:00Z"
+    async with session_scope() as session:
+        current, created = await incident_repository.upsert_alert(session, next_cycle)
+        assert created is True
+        assert current.id != old_id
+        assert current.status == IncidentStatus.RECEIVED
+
+
 async def test_diagnosis_idempotency_key_prevents_duplicate_jobs():
     async with session_scope() as session:
         incident, _ = await incident_repository.upsert_alert(session, alert_payload("queue-case"))

@@ -26,6 +26,7 @@ def _read(proposal: RemediationProposal) -> RemediationProposalRead:
     return RemediationProposalRead(
         id=proposal.id,
         incident_id=proposal.incident_id,
+        diagnosis_run_id=proposal.diagnosis_run_id,
         action_id=proposal.action_id,
         parameters=proposal.parameters,
         reason=proposal.reason,

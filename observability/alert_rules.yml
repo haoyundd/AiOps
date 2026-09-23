@@ -52,3 +52,18 @@ groups:
         annotations:
           summary: MerchantFlow health endpoint is down
           description: Blackbox probing cannot obtain a successful health response.
+
+      # 业务接口会在 MQ 发布失败后回滚并返回可读错误，HTTP 状态不一定是 5xx；
+      # 因此必须直接对真实业务失败 Counter 告警，下一步交给 AIOps MCP 取证。
+      - alert: MerchantFlowRocketMQPublishFailure
+        expr: sum(increase(merchantflow_mq_publish_failures_total{job="merchantflow",flow="seckill-order"}[5m])) > 0
+        for: 15s
+        labels:
+          severity: warning
+          service: merchantflow
+          environment: local
+          metric: merchantflow_mq_publish_failures_total
+          threshold: "0"
+        annotations:
+          summary: MerchantFlow RocketMQ order publishing has failed
+          description: The real seckill order publishing path reported at least one failure in five minutes.
